@@ -18,9 +18,9 @@ LOG_MODULE_REGISTER(screen_scan_macro, CONFIG_ZMK_LOG_LEVEL);
 #error "Add a zmk,behavior-ssm-tog node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
 #endif
 
-/* ---- Host -> keyboard: action command listener (marker 0xA5) ---- */
+/* ---- Host -> keyboard: action command listener (marker 0x4D) ---- */
 
-#define SSM_CMD_MARKER 0xA5
+#define SSM_CMD_MARKER 0x4D /* 'M' - Macro command */
 #define SSM_CMD_VERSION 0x01
 #define SSM_NUM_KEYCODE_SLOTS 6
 
@@ -168,9 +168,9 @@ static int screen_scan_macro_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(screen_scan_macro, screen_scan_macro_listener);
 ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
 
-/* ---- Keyboard -> host: &ssm_tog trigger behavior (marker 0xA6) ---- */
+/* ---- Keyboard -> host: &ssm_tog trigger behavior (marker 0x4E) ---- */
 
-#define SSM_TOG_MARKER 0xA6
+#define SSM_TOG_MARKER 0x4E /* 'N' - Notify (host of the toggle) */
 #define SSM_TOG_PACKET_SIZE 32
 
 static uint8_t ssm_tog_state = 0x00;

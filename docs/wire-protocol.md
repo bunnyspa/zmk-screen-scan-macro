@@ -11,11 +11,11 @@ byte — not a single bidirectional protocol:
 
 ## Host -> keyboard (action command)
 
-Marker `0xA5`.
+Marker `0x4D` ('M' - Macro command).
 
 | Bytes | Field | Notes |
 |---|---|---|
-| 0 | Marker | `0xA5` |
+| 0 | Marker | `0x4D` |
 | 1 | Protocol version | `0x01`. Firmware drops + debug-logs packets from an unrecognized version, never attempts to interpret them. |
 | 2 | Action type | See below |
 | 3 | Sequence number | Wraps at 256. A packet whose sequence number equals the last one processed is treated as a duplicate and skipped (retried write, not a new command). |
@@ -41,13 +41,13 @@ Action types (byte 2):
 
 ## Keyboard -> host (`&ssm_tog` trigger)
 
-Marker `0xA6`. Simple state broadcast, no version/sequence needed (not a
+Marker `0x4E` ('N' - Notify, host of the toggle). Simple state broadcast, no version/sequence needed (not a
 command stream where drops/duplicates matter, same shape as the Korean IME
 channel).
 
 | Bytes | Field | Notes |
 |---|---|---|
-| 0 | Marker | `0xA6` |
+| 0 | Marker | `0x4E` |
 | 1 | Toggled state | `0x00` stopped, `0x01` running. Firmware flips this on each `&ssm_tog` press — it doesn't know the host's actual run state, just its own last-sent value. |
 | 2-31 | Reserved | zero-padded |
 
