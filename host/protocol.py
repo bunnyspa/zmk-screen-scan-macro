@@ -29,6 +29,14 @@ MOUSE_BUTTON_MIDDLE = 0x04
 HID_USAGE_KEY_KEYBOARD_A = 0x04
 
 
+def keycode_for_letter(letter: str) -> int:
+    """HID usage ID for a single lowercase a-z letter (sequential from 0x04)."""
+    letter = letter.lower()
+    if len(letter) != 1 or not "a" <= letter <= "z":
+        raise ValueError(f"expected a single a-z letter, got {letter!r}")
+    return HID_USAGE_KEY_KEYBOARD_A + (ord(letter) - ord("a"))
+
+
 def encode_command(
     action: int,
     seq: int,

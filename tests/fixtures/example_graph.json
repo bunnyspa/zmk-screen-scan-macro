@@ -1,0 +1,28 @@
+{
+  "start_node": "press_a",
+  "nodes": {
+    "press_a": {
+      "type": "action",
+      "action_type": "key_press",
+      "key_combo": "a",
+      "out": "wait_1"
+    },
+    "wait_1": {
+      "type": "wait",
+      "duration_ms": 1000,
+      "out": "click_1"
+    },
+    "click_1": {
+      "type": "action",
+      "action_type": "click",
+      "click_rect": [200, 200, 40, 40],
+      "mouse_button": "left",
+      "out": "wait_2"
+    },
+    "wait_2": {
+      "type": "wait",
+      "duration_ms": 1000,
+      "out": "press_a"
+    }
+  }
+}
