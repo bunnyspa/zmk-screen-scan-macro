@@ -1,0 +1,7 @@
+# Screen Scan Macro - start/stop toggle behavior
+
+description: Toggles the screen-scan-macro host engine's run state over Raw HID
+
+compatible: "zmk,behavior-ssm-tog"
+
+include: zero_param.yaml

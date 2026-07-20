@@ -1,4 +1,4 @@
-if(CONFIG_ZMK_SCREEN_SCAN_MACRO_SPIKE)
+if(CONFIG_ZMK_SCREEN_SCAN_MACRO)
     zephyr_library()
-    zephyr_library_sources(src/ssm_spike.c)
+    zephyr_library_sources(src/screen_scan_macro.c)
 endif()

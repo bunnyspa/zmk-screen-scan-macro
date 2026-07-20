@@ -1,13 +1,22 @@
 # zmk-screen-scan-macro
 
-**Current state: Phase 0 spike only**, not the real module (see the design plan for
-the full picture): confirms `zmk_hid_keyboard_press()` / `zmk_endpoint_send_report()`
-are safely callable from a Raw HID listener callback, on real hardware.
+**Current state: Phase 1 firmware (host->keyboard relay + `&ssm_tog` trigger).**
+Not the full system yet — see the design plan for the full picture (host-side
+screen capture + decision-graph macro engine come in later phases). The
+Phase 0 spike (confirming real HID emission works on real hardware) passed
+and has been replaced by this real module.
 
-- `zephyr/`, `Kconfig`, `CMakeLists.txt`, `src/ssm_spike.c` — a minimal Zephyr
-  module at repo root (matching this ecosystem's other Raw HID modules). Any Raw
-  HID packet whose first byte is `0xA0` triggers a hardcoded 'A' key tap.
-- `host/send_once.py` — sends one such packet and exits.
+- `zephyr/`, `Kconfig`, `CMakeLists.txt`, `src/screen_scan_macro.c` — a
+  Zephyr module at repo root (matching this ecosystem's other Raw HID
+  modules). Listens for host action commands (marker `0xA5`) and emits real
+  keyboard/mouse HID reports; also provides the `&ssm_tog` behavior, which
+  broadcasts a start/stop toggle back to the host (marker `0xA6`).
+- `dts/bindings/behaviors/zmk,behavior-ssm-tog.yaml` — devicetree binding for
+  `&ssm_tog` (zero-argument behavior).
+- `docs/wire-protocol.md` — full packet layout for both channels.
+- `host/send_once.py` — Phase 0 leftover, single fixed-packet sender. The
+  real host sender/receiver (QThread-based, matching
+  `korean-ime-reporter-windows`'s pattern) is still to be built.
 
 ## No standalone test harness
 
@@ -15,19 +24,18 @@ Same as the other Raw HID modules in this ecosystem — verification is
 hardware-in-the-loop only:
 
 1. Point a `west.yml` manifest (e.g. `zmk-config`'s) at this repo, with
-   `CONFIG_RAW_HID=y` and `CONFIG_ZMK_SCREEN_SCAN_MACRO_SPIKE=y` set on the
-   central half's `.conf`.
+   `CONFIG_RAW_HID=y` and `CONFIG_ZMK_SCREEN_SCAN_MACRO=y` set on the central
+   half's `.conf`, and a `zmk,behavior-ssm-tog` devicetree node present in the
+   keymap (required — the module `#error`s at compile time without one).
 2. Build and flash the central half.
-3. `pip install -r host/requirements.txt`
-4. Fetch `hidapi.dll` (the `hid` package's native dependency, not bundled) into
-   `host/`, next to `send_once.py` — same binary `korean-ime-reporter-windows`
-   uses:
-   ```
-   curl -fL -o hidapi-win.zip https://github.com/libusb/hidapi/releases/download/hidapi-0.14.0/hidapi-win.zip
-   unzip -j hidapi-win.zip x64/hidapi.dll -d host/
-   ```
-5. `python host/send_once.py`
-6. Confirm a literal `a` appears in a focused text field.
+3. Exercise the command channel: send a 32-byte packet per
+   `docs/wire-protocol.md` (marker `0xA5`) and confirm the corresponding real
+   HID output (keystroke/mouse move/click).
+4. Exercise the trigger channel: bind `&ssm_tog` to a key, press it, confirm
+   the host receives a marker-`0xA6` packet with the toggled state byte.
 
-Before merging any real module work, remove the spike's manifest entry/config —
-it exists only to answer the Phase 0 question in the plan.
+## Marker bytes
+
+`0xA5` (host→keyboard command), `0xA6` (keyboard→host `&ssm_tog` trigger) —
+both distinct from `zmk-korean-ime-layer`'s `0xD5`. The retired Phase-0 spike
+used `0xA0`; not in use anymore.
