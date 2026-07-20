@@ -168,20 +168,20 @@ static int screen_scan_macro_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(screen_scan_macro, screen_scan_macro_listener);
 ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
 
-/* ---- Keyboard -> host: &ssm_tog trigger behavior (marker 0x4E) ---- */
+/* ---- Keyboard -> host: &ssm_tog trigger behavior (marker 0x4E) ----
+ * Stateless on purpose: firmware doesn't track running/stopped at all, it
+ * just notifies the host that the physical toggle was pressed. The host is
+ * the only thing that owns a running/stopped boolean, avoiding two
+ * independent toggles that could ever drift out of sync (e.g. after a
+ * firmware reboot or reconnect). */
 
 #define SSM_TOG_MARKER 0x4E /* 'N' - Notify (host of the toggle) */
 #define SSM_TOG_PACKET_SIZE 32
 
-static uint8_t ssm_tog_state = 0x00;
-
 static int ssm_tog_pressed(struct zmk_behavior_binding *binding,
                             struct zmk_behavior_binding_event event) {
-    ssm_tog_state = ssm_tog_state ? 0x00 : 0x01;
-
     uint8_t packet[SSM_TOG_PACKET_SIZE] = {0};
     packet[0] = SSM_TOG_MARKER;
-    packet[1] = ssm_tog_state;
 
     raise_raw_hid_sent_event(
         (struct raw_hid_sent_event){.data = packet, .length = sizeof(packet)});

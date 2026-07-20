@@ -41,15 +41,17 @@ Action types (byte 2):
 
 ## Keyboard -> host (`&ssm_tog` trigger)
 
-Marker `0x4E` ('N' - Notify, host of the toggle). Simple state broadcast, no version/sequence needed (not a
-command stream where drops/duplicates matter, same shape as the Korean IME
-channel).
+Marker `0x4E` ('N' - Notify, host that the toggle was pressed). Stateless -
+firmware doesn't track running/stopped at all, it just fires this on every
+press. The host is the sole owner of the running/stopped boolean, flipping it
+once per event received. This avoids two independent toggles (firmware's and
+the host's) ever drifting out of sync, e.g. after a firmware reboot or
+reconnect.
 
 | Bytes | Field | Notes |
 |---|---|---|
 | 0 | Marker | `0x4E` |
-| 1 | Toggled state | `0x00` stopped, `0x01` running. Firmware flips this on each `&ssm_tog` press — it doesn't know the host's actual run state, just its own last-sent value. |
-| 2-31 | Reserved | zero-padded |
+| 1-31 | Reserved | zero-padded, no meaningful payload |
 
 ## Breaking-change discipline
 

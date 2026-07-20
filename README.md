@@ -32,7 +32,8 @@ hardware-in-the-loop only:
    `docs/wire-protocol.md` (marker `0x4D`) and confirm the corresponding real
    HID output (keystroke/mouse move/click).
 4. Exercise the trigger channel: bind `&ssm_tog` to a key, press it, confirm
-   the host receives a marker-`0x4E` packet with the toggled state byte.
+   the host receives a marker-`0x4E` packet (stateless — host owns its own
+   running/stopped boolean, flipped once per event received).
 
 ## Marker bytes
 
