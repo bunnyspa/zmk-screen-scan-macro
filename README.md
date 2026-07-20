@@ -1,11 +1,12 @@
-# Phase 0 spike
+# zmk-screen-scan-macro
 
-Smallest possible proof-of-concept, not the real module (see the plan for the full
-design): confirms `zmk_hid_keyboard_press()` / `zmk_endpoint_send_report()` are
-safely callable from a Raw HID listener callback, on real hardware.
+**Current state: Phase 0 spike only**, not the real module (see the design plan for
+the full picture): confirms `zmk_hid_keyboard_press()` / `zmk_endpoint_send_report()`
+are safely callable from a Raw HID listener callback, on real hardware.
 
-- `firmware/` — a minimal Zephyr module. Any Raw HID packet whose first byte is
-  `0xA0` triggers a hardcoded 'A' key tap.
+- `zephyr/`, `Kconfig`, `CMakeLists.txt`, `src/ssm_spike.c` — a minimal Zephyr
+  module at repo root (matching this ecosystem's other Raw HID modules). Any Raw
+  HID packet whose first byte is `0xA0` triggers a hardcoded 'A' key tap.
 - `host/send_once.py` — sends one such packet and exits.
 
 ## No standalone test harness
@@ -13,9 +14,9 @@ safely callable from a Raw HID listener callback, on real hardware.
 Same as the other Raw HID modules in this ecosystem — verification is
 hardware-in-the-loop only:
 
-1. Point a `west.yml` manifest (e.g. `zmk-config`'s, temporarily) at this repo's
-   `spike/firmware` path, with `CONFIG_RAW_HID=y` and
-   `CONFIG_ZMK_SCREEN_SCAN_MACRO_SPIKE=y` set on the central half's `.conf`.
+1. Point a `west.yml` manifest (e.g. `zmk-config`'s) at this repo, with
+   `CONFIG_RAW_HID=y` and `CONFIG_ZMK_SCREEN_SCAN_MACRO_SPIKE=y` set on the
+   central half's `.conf`.
 2. Build and flash the central half.
 3. `pip install -r host/requirements.txt`
 4. Fetch `hidapi.dll` (the `hid` package's native dependency, not bundled) into
