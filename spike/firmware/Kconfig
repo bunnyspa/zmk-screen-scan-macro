@@ -1,0 +1,13 @@
+config ZMK_SCREEN_SCAN_MACRO_SPIKE
+    bool "Screen Scan Macro - real HID emission spike"
+    depends on RAW_HID
+    default n
+    help
+      Minimal proof-of-concept, not the real module: any Raw HID packet
+      whose first byte is the spike marker (0xA0) triggers a hardcoded
+      'A' key tap emitted as a real HID keyboard report.
+
+      Exists only to hardware-confirm zmk_hid_keyboard_press()/
+      zmk_endpoint_send_report() are safely callable from a raw-HID
+      listener callback, before the full screen-scan-macro module is
+      built. Central half only, same as other Raw HID consumers.
