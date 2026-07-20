@@ -24,10 +24,10 @@ static int ssm_spike_listener(const zmk_event_t *eh) {
     LOG_INF("ssm_spike: trigger received, emitting hardcoded 'A' key tap");
 
     zmk_hid_keyboard_press(HID_USAGE_KEY_KEYBOARD_A);
-    zmk_endpoint_send_report(HID_USAGE_KEY);
+    zmk_endpoints_send_report(HID_USAGE_KEY);
 
     zmk_hid_keyboard_release(HID_USAGE_KEY_KEYBOARD_A);
-    zmk_endpoint_send_report(HID_USAGE_KEY);
+    zmk_endpoints_send_report(HID_USAGE_KEY);
 
     return ZMK_EV_EVENT_BUBBLE;
 }
