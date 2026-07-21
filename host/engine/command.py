@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
 
 

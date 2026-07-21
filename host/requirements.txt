@@ -1,1 +1,8 @@
 hid>=1.0.6
+PyQt5
+NodeGraphQt
+setuptools  # provides the distutils shim NodeGraphQt 0.6.44 needs on Python 3.12+, see main.py
+opencv-python
+numpy
+windows-capture
+pytest

@@ -1,9 +1,11 @@
 # zmk-screen-scan-macro
 
 **Current state: Phase 1 firmware (confirmed working on hardware) + Phase 2
-execution engine (unit-tested, not yet run against real capture/hardware).**
-Not the full system yet — the graphical editor (Phase 3, porting VisionGraph's
-UI) is still to come. See the design plan for the full picture.
+execution engine (unit-tested) + Phase 3 graph editor (ported, imports and
+constructs successfully — not yet exercised interactively).** One whole
+program: the editor, engine, and HID connection all run in a single process
+(`host/main.py`) — see `docs/design-decisions.md`'s addendum for how they're
+wired together.
 
 ### Firmware (Phase 1)
 
@@ -17,21 +19,25 @@ UI) is still to come. See the design plan for the full picture.
   `&ssm_tog` (zero-argument behavior).
 - `docs/wire-protocol.md` — full packet layout for both channels.
 
-### Host (Phase 1 leftovers + Phase 2 engine)
+### Host — one program (`host/main.py`)
 
 - `host/protocol.py` — command-channel packet encode/decode, shared by
   everything below.
-- `host/send_once.py`, `demo_loop.py`, `tog_listener.py` — Phase 0/1 manual
-  test scripts, not the real app.
-- `engine/` — the execution engine: `runner.py` (`MacroRunner`, walks a
-  hand-authored graph — see `tests/fixtures/example_graph.json` for the
-  schema), `matcher.py` (masked template matching), `cursor.py`
-  (click-targeting via relative cursor jog), `command.py` (`Command` +
-  real/recording sinks), `window_capture.py` (ported from VisionGraph). No
-  graphical editor yet — a graph is a plain JSON file for now; Phase 3 wires
-  the real editor's output into this schema.
-- `tests/` — unit tests for the engine (`pytest`, no hardware needed):
-  `test_matcher.py`, `test_cursor.py`, `test_runner.py`.
+- `host/engine/` — the execution engine: `runner.py` (`MacroRunner`, walks a
+  graph — hand-authored JSON for now, or translated live from the editor's
+  NodeGraphQt session, see `main_window.py._build_engine_graph()`),
+  `matcher.py` (masked template matching), `cursor.py` (click-targeting via
+  relative cursor jog), `command.py` (`Command` + real/recording sinks),
+  `window_capture.py` (ported from VisionGraph). Deliberately a sibling of
+  `app/` under `host/`, not nested inside it — see `docs/design-decisions.md`
+  for why that's still "one program."
+- `host/app/` — the graph editor, ported from VisionGraph (UI + data model
+  only there; here it's wired to the engine). `main_window.py` adds: a
+  per-profile target-window field, a Run/Stop toolbar action, and
+  `hid_link.py` (the single open Raw HID connection shared by sending
+  commands and receiving `&ssm_tog` — pressing the physical key and clicking
+  Run/Stop are two paths to the same toggle).
+- `host/tests/` — unit tests for the engine (`pytest`, no hardware needed).
 
 ## Verification
 
@@ -51,11 +57,31 @@ in this ecosystem — hardware-in-the-loop only:
    running/stopped boolean, flipped once per event received). **Confirmed
    working.**
 
-**Engine**: `pip install -r engine/requirements.txt` then `pytest` from the
-repo root — no hardware needed, everything's mocked (`FakeCapture`,
-`RecordingCommandSink`, injectable cursor-position getters). Not yet run
-end-to-end against a real captured window + real firmware — that manual
-smoke test (per the design plan) is still outstanding.
+**Engine**: `pip install -r host/requirements.txt` then `pytest` from
+`host/` — no hardware needed, everything's mocked (`FakeCapture`,
+`RecordingCommandSink`, injectable cursor-position getters). **10/10 passing.**
+Not yet run end-to-end against a real captured window + real firmware — that
+manual smoke test is still outstanding.
+
+**Editor + full app**: `python host/main.py` (or the offscreen construction
+path used to verify it) **successfully imports and constructs `MainWindow`**,
+including connecting to the real Raw HID device when one is present. Two
+environment quirks had to be worked around (both handled automatically in
+`main.py`, not manual setup):
+- `Qt.py` (NodeGraphQt's binding shim) can pick `PyQt6` over `PyQt5` if both
+  are installed, which crashes NodeGraphQt outright (the exact issue
+  `docs/design-decisions.md` already documented from VisionGraph) —
+  `main.py` forces `QT_PREFERRED_BINDING=PyQt5`.
+- NodeGraphQt 0.6.44 imports the stdlib `distutils` module directly, removed
+  in Python 3.12+ — `main.py` imports `setuptools` first with
+  `SETUPTOOLS_USE_DISTUTILS=local`, which provides a shim.
+
+**Not yet done**: actually clicking around the running GUI (no display in
+this environment to verify interactively), building a real profile, hitting
+Run against a real captured window, or exercising `&ssm_tog` through the full
+app rather than the standalone `tog_listener.py` script. No VisionGraph test
+suite (`test_action_node.py` etc.) has been ported either — a real,
+acknowledged gap, not an oversight.
 
 ## Marker bytes
 

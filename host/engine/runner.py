@@ -34,20 +34,33 @@ graph runs forever by design.
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
+import time
 from pathlib import Path
 
 import cv2
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
 
 from .command import Command, CommandSink  # noqa: E402
-from .cursor import click_commands  # noqa: E402
+from .cursor import click_at_target  # noqa: E402
+from .focus import (  # noqa: E402
+    DEFAULT_MAX_FOCUS_WAIT_SECONDS,
+    FOCUS_POLICY_FOCUS_AND_RESUME,
+    FOCUS_POLICY_PAUSE_UNTIL_FOCUSED,
+    FocusTimeoutError,
+    focus_window,
+    is_window_focused,
+)
 from .matcher import match  # noqa: E402
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_POLL_INTERVAL_MS = 200
+DEFAULT_FOCUS_POLL_INTERVAL_MS = 300
 
 _MOUSE_BUTTONS = {
     "left": wire.MOUSE_BUTTON_LEFT,
@@ -58,12 +71,21 @@ _MOUSE_BUTTONS = {
 
 class MacroRunner:
     def __init__(self, graph: dict, capture, sink: CommandSink, hwnd=None,
-                 profile_dir: Path | str = "."):
+                 profile_dir: Path | str = ".",
+                 focus_policy: str = FOCUS_POLICY_PAUSE_UNTIL_FOCUSED,
+                 focus_poll_interval_ms: int = DEFAULT_FOCUS_POLL_INTERVAL_MS,
+                 max_focus_wait_seconds: float = DEFAULT_MAX_FOCUS_WAIT_SECONDS,
+                 is_window_focused=is_window_focused, focus_window=focus_window):
         self._graph = graph
         self._capture = capture
         self._sink = sink
         self._hwnd = hwnd
         self._profile_dir = Path(profile_dir)
+        self._focus_policy = focus_policy
+        self._focus_poll_interval_ms = focus_poll_interval_ms
+        self._max_focus_wait_seconds = max_focus_wait_seconds
+        self._is_window_focused = is_window_focused
+        self._focus_window = focus_window
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -98,15 +120,57 @@ class MacroRunner:
             else:
                 raise ValueError(f"unknown node type: {node_type}")
 
+    def _ensure_focus(self) -> bool:
+        """Blocks (interruptibly) until the target window is focused, per
+        focus_policy - real HID input goes wherever the OS has focus, not
+        to a specific window, so an action fired while the target isn't
+        foreground would land somewhere else entirely.
+
+        Returns True once it's safe to proceed. Returns False if a stop was
+        requested while waiting - callers must not proceed with the action
+        in that case. Raises FocusTimeoutError if max_focus_wait_seconds
+        elapses without ever confirming focus - confirmed against real
+        hardware that Windows can keep refusing to hand over the
+        foreground indefinitely, which an unbounded retry loop here would
+        otherwise turn into what looks like the whole app freezing."""
+        if self._hwnd is None:
+            return True
+
+        poll_interval = self._focus_poll_interval_ms / 1000.0
+        deadline = time.monotonic() + self._max_focus_wait_seconds
+        while not self._stop_requested.is_set():
+            if self._is_window_focused(self._hwnd):
+                return True
+
+            if time.monotonic() >= deadline:
+                raise FocusTimeoutError(
+                    f"target window did not come to focus within "
+                    f"{self._max_focus_wait_seconds}s (focus_policy={self._focus_policy!r})"
+                )
+
+            if self._focus_policy == FOCUS_POLICY_FOCUS_AND_RESUME:
+                logger.info("MacroRunner: target window not focused - focusing and resuming")
+                self._focus_window(self._hwnd)
+            elif self._focus_policy == FOCUS_POLICY_PAUSE_UNTIL_FOCUSED:
+                logger.info("MacroRunner: target window not focused - pausing until it regains focus")
+            else:
+                raise ValueError(f"unknown focus_policy: {self._focus_policy}")
+
+            self._stop_requested.wait(timeout=poll_interval)
+
+        return False
+
     def _run_action(self, node: dict) -> None:
+        if not self._ensure_focus():
+            return
+
         action_type = node["action_type"]
         if action_type == "key_press":
             keycode = wire.keycode_for_letter(node["key_combo"])
             self._sink.send(Command(action=wire.ACTION_KEY_PRESS, keycodes=(keycode,)))
         elif action_type == "click":
             button = _MOUSE_BUTTONS[node.get("mouse_button", "left")]
-            for command in click_commands(self._hwnd, tuple(node["click_rect"]), button):
-                self._sink.send(command)
+            click_at_target(self._hwnd, tuple(node["click_rect"]), self._sink, button)
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
