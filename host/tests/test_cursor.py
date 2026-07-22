@@ -260,6 +260,86 @@ def test_click_at_target_reuses_persisted_gain_estimate_across_calls():
 
 _SIDE_BY_SIDE_MONITORS = [(0, 0, 1000, 1000), (1000, 0, 2000, 1000)]
 
+# A third monitor (C) whose top edge touches the same boundary as the
+# A-to-B crossing seam, with its left/right edges (400, 600) sitting
+# squarely inside the A/B overlap corridor [0, 1000] - splitting it into
+# an unsafe middle chunk with two safe chunks on either side.
+_THREE_MONITOR_DANGER_ARRANGEMENT = [
+    (0, 0, 1000, 1000),      # A (current)
+    (0, 1000, 1000, 2000),   # B (target, directly below A)
+    (400, 1000, 600, 3000),  # C (third monitor, edge inside the corridor)
+]
+
+
+def test_click_at_target_proactive_mode_avoids_a_third_monitors_edge_in_the_corridor():
+    # C's edges (x=400, x=600) split the A/B corridor into an unsafe
+    # middle chunk and two safe chunks, [0, 400) and (600, 1000], each
+    # width 400 - the proactive waypoint should land at the first widest
+    # gap's midpoint (200), not the corridor's overall midpoint (500,
+    # which sits inside C's unsafe range).
+    sink = SimulatingSink(start_pos=(900, 500), move_ratio=1.0)
+
+    try:
+        click_at_target(
+            hwnd=1,
+            click_rect=(190, 990, 20, 20),  # center (200, 1000), inside B
+            sink=sink,
+            get_cursor_pos=sink.get_pos,
+            get_window_screen_origin=lambda hwnd: (0, 0),
+            get_monitor_rects=lambda: _THREE_MONITOR_DANGER_ARRANGEMENT,
+            crossing_mode=cursor_module.CROSSING_MODE_PROACTIVE,
+            sleep=lambda seconds: None,
+            now=lambda: 0.0,
+        )
+    except CursorConvergenceError:
+        pass  # only the first (repositioning) move matters for this test
+
+    move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
+    first_move = move_commands[0]
+    # repositions horizontally to the safe waypoint (x=200) first, before
+    # ever pushing across the boundary (y unchanged so far).
+    assert first_move.dy == 0
+    assert first_move.dx == 200 - 900
+
+
+def test_click_at_target_proactive_mode_still_crosses_a_plain_seam():
+    # No third monitor involved - proactive mode should still cross
+    # successfully (via the same reactive pusher underneath), just from
+    # whatever safe waypoint it computes first.
+    sink = SimulatingSink(start_pos=(950, 500), move_ratio=1.0)
+
+    click_at_target(
+        hwnd=1,
+        click_rect=(1490, 490, 20, 20),  # center (1500, 500), inside the right monitor
+        sink=sink,
+        get_cursor_pos=sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (0, 0),
+        get_monitor_rects=lambda: _SIDE_BY_SIDE_MONITORS,
+        crossing_mode=cursor_module.CROSSING_MODE_PROACTIVE,
+        sleep=lambda seconds: None,
+        now=lambda: 0.0,
+    )
+
+    assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
+    assert abs(sink.pos[0] - 1500) <= 2 and abs(sink.pos[1] - 500) <= 2
+
+
+def test_click_at_target_unknown_crossing_mode_raises():
+    sink = SimulatingSink(start_pos=(950, 500), move_ratio=1.0)
+
+    with pytest.raises(ValueError):
+        click_at_target(
+            hwnd=1,
+            click_rect=(1490, 490, 20, 20),
+            sink=sink,
+            get_cursor_pos=sink.get_pos,
+            get_window_screen_origin=lambda hwnd: (0, 0),
+            get_monitor_rects=lambda: _SIDE_BY_SIDE_MONITORS,
+            crossing_mode="bogus",
+            sleep=lambda seconds: None,
+            now=lambda: 0.0,
+        )
+
 
 class StuckThenFreeSink(RecordingCommandSink):
     """Blocks the first blocked_move_count MOUSE_MOVE commands entirely
@@ -522,3 +602,28 @@ def test_wait_for_settled_position_gives_up_after_max_wait():
     )
 
     assert isinstance(result, tuple)  # returned something instead of hanging/raising
+
+
+def test_click_at_target_chains_through_an_intermediate_monitor():
+    # Three identical monitors in a row: A-B-C. Cursor starts in A;
+    # target is in C - A and C don't directly share a boundary (B sits
+    # between them). There's no explicit multi-hop planner - this checks
+    # whether the existing per-attempt monitor recheck (added to recover
+    # from gain-adaptation overshoot) also happens to chain A -> B -> C
+    # correctly as an emergent side effect, one hop at a time.
+    three_in_a_row = [(0, 0, 1000, 1000), (1000, 0, 2000, 1000), (2000, 0, 3000, 1000)]
+    sink = SimulatingSink(start_pos=(500, 500), move_ratio=1.0)
+
+    click_at_target(
+        hwnd=1,
+        click_rect=(2490, 490, 20, 20),  # center (2500, 500), inside C
+        sink=sink,
+        get_cursor_pos=sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (0, 0),
+        get_monitor_rects=lambda: three_in_a_row,
+        sleep=lambda seconds: None,
+        now=lambda: 0.0,
+    )
+
+    assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
+    assert abs(sink.pos[0] - 2500) <= 2 and abs(sink.pos[1] - 500) <= 2

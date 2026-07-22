@@ -132,6 +132,18 @@ DEFAULT_SAFE_MARGIN_PX = 100
 # gain-adaptive loop would have used to cross successfully on its own.
 DEFAULT_STUCK_CONFIRMATION_COUNT = 3
 
+# crossing_mode: "reactive" pushes straight from wherever the cursor
+# already is and only reacts if that turns out to be a bad spot (see
+# _cross_to_target_monitor). "proactive" computes a safe crossing point
+# first - the widest clearance from any other monitor's edge that also
+# touches the same boundary line (what turns a plain seam into a concave
+# multi-monitor corner) - moves there with one diagonal move, then
+# delegates to the same reactive pusher from that better starting point,
+# so the reactive safety net (stuck-confirmation, step-back, early-bail)
+# still applies either way.
+CROSSING_MODE_REACTIVE = "reactive"
+CROSSING_MODE_PROACTIVE = "proactive"
+
 
 class CursorConvergenceError(RuntimeError):
     """Raised when click_at_target can't land the cursor within tolerance
@@ -284,6 +296,66 @@ def _safe_axis_value(target_value: int, low_edge: int, high_edge: int, margin: i
     return int(_clamp(target_value, lo, hi))
 
 
+def _perpendicular_range_and_boundary(current_monitor, target_monitor, dir_x, dir_y):
+    """The [lo, hi] range on the axis perpendicular to the crossing
+    direction where current_monitor and target_monitor overlap, and the
+    coordinate of the boundary line between them on the crossing axis."""
+    cur_left, cur_top, cur_right, cur_bottom = current_monitor
+    tgt_left, tgt_top, tgt_right, tgt_bottom = target_monitor
+    if dir_y != 0:
+        lo, hi = max(cur_left, tgt_left), min(cur_right, tgt_right)
+        boundary = cur_bottom if dir_y > 0 else cur_top
+    else:
+        lo, hi = max(cur_top, tgt_top), min(cur_bottom, tgt_bottom)
+        boundary = cur_right if dir_x > 0 else cur_left
+    return lo, hi, boundary
+
+
+def _danger_points_on_boundary(
+    monitor_rects, current_monitor, target_monitor, dir_x, dir_y, boundary, lo, hi,
+):
+    """Perpendicular-axis coordinates within [lo, hi] where some OTHER
+    monitor's edge touches the same boundary line - each one is a
+    concave-corner risk point (a third monitor meeting the crossing
+    seam), sorted for _find_safe_crossing_waypoint()."""
+    points = []
+    for rect in monitor_rects:
+        if rect == current_monitor or rect == target_monitor:
+            continue
+        r_left, r_top, r_right, r_bottom = rect
+        if dir_y != 0:
+            if r_top == boundary or r_bottom == boundary:
+                if lo < r_left < hi:
+                    points.append(r_left)
+                if lo < r_right < hi:
+                    points.append(r_right)
+        else:
+            if r_left == boundary or r_right == boundary:
+                if lo < r_top < hi:
+                    points.append(r_top)
+                if lo < r_bottom < hi:
+                    points.append(r_bottom)
+    return sorted(points)
+
+
+def _find_safe_crossing_waypoint(lo: int, hi: int, danger_points, safe_margin_px: int) -> int:
+    """Perpendicular-axis coordinate within [lo, hi] with the most
+    clearance from any danger point - the midpoint of the widest gap
+    between consecutive danger points (including the corridor's own
+    ends). Falls back to the corridor midpoint if there are no danger
+    points at all. safe_margin_px isn't applied as a hard constraint here
+    (the corridor might be too narrow to honor it) - it's what the caller
+    uses as its normal reactive margin if this still isn't enough."""
+    boundaries = [lo, *danger_points, hi]
+    best_mid, best_width = (lo + hi) // 2, -1
+    for a, b in zip(boundaries, boundaries[1:]):
+        width = b - a
+        if width > best_width:
+            best_width = width
+            best_mid = (a + b) // 2
+    return best_mid
+
+
 def _cross_to_target_monitor(
     cur_x: int, cur_y: int, target_x: int, target_y: int,
     current_monitor, target_monitor, sink: CommandSink,
@@ -386,6 +458,77 @@ def _cross_to_target_monitor(
     return cur_x, cur_y
 
 
+def _move_to_safe_crossing_point(
+    cur_x: int, cur_y: int, current_monitor, target_monitor, sink: CommandSink,
+    get_cursor_pos, sleep, now,
+    settle_poll_interval_seconds: float, settle_stable_reads: int, settle_max_wait_seconds: float,
+    monitor_rects, dir_x: int, dir_y: int, safe_margin_px: int,
+) -> tuple[int, int]:
+    """Moves to the point on the crossing boundary's perpendicular axis
+    with the most clearance from any other monitor's edge that also
+    touches that boundary line - avoiding a concave multi-monitor corner
+    by construction, rather than discovering it by getting stuck there.
+    One single diagonal move; the crossing axis itself is left alone
+    here, since crossing hasn't started yet."""
+    lo, hi, boundary = _perpendicular_range_and_boundary(current_monitor, target_monitor, dir_x, dir_y)
+    danger_points = _danger_points_on_boundary(
+        monitor_rects, current_monitor, target_monitor, dir_x, dir_y, boundary, lo, hi,
+    )
+    safe_coord = _find_safe_crossing_waypoint(lo, hi, danger_points, safe_margin_px)
+
+    if dir_x != 0:
+        waypoint_x, waypoint_y = cur_x, safe_coord
+    else:
+        waypoint_x, waypoint_y = safe_coord, cur_y
+
+    move_dx, move_dy = waypoint_x - cur_x, waypoint_y - cur_y
+    if move_dx == 0 and move_dy == 0:
+        return cur_x, cur_y
+
+    logger.info("click_at_target: moving to a safe crossing point (%d, %d) - the widest "
+                "clearance from any other monitor's edge on this boundary (danger points: "
+                "%s) - before pushing across (single diagonal move)", waypoint_x, waypoint_y,
+                danger_points)
+    sink.send(Command(action=wire.ACTION_MOUSE_MOVE, dx=move_dx, dy=move_dy))
+    return _wait_for_settled_position(
+        get_cursor_pos, sleep, now, settle_poll_interval_seconds,
+        settle_stable_reads, settle_max_wait_seconds,
+    )
+
+
+def _cross_monitors(
+    cur_x: int, cur_y: int, target_x: int, target_y: int,
+    current_monitor, target_monitor, sink: CommandSink,
+    get_cursor_pos, sleep, now,
+    settle_poll_interval_seconds: float, settle_stable_reads: int, settle_max_wait_seconds: float,
+    monitor_rects, crossing_step_px: int, max_crossing_attempts: int, safe_margin_px: int,
+    stuck_confirmation_count: int, crossing_mode: str,
+) -> tuple[int, int]:
+    """Dispatches to the reactive pusher (_cross_to_target_monitor)
+    directly, or - in proactive mode - repositions to a safe crossing
+    point first (_move_to_safe_crossing_point), then still runs the same
+    reactive pusher from there, so its safety net (stuck-confirmation,
+    step-back, early-bail) applies either way."""
+    if crossing_mode == CROSSING_MODE_PROACTIVE:
+        direction = _crossing_direction(current_monitor, target_monitor)
+        if direction is not None:
+            dir_x, dir_y = direction
+            cur_x, cur_y = _move_to_safe_crossing_point(
+                cur_x, cur_y, current_monitor, target_monitor, sink, get_cursor_pos, sleep,
+                now, settle_poll_interval_seconds, settle_stable_reads, settle_max_wait_seconds,
+                monitor_rects, dir_x, dir_y, safe_margin_px,
+            )
+    elif crossing_mode != CROSSING_MODE_REACTIVE:
+        raise ValueError(f"unknown crossing_mode: {crossing_mode!r}")
+
+    return _cross_to_target_monitor(
+        cur_x, cur_y, target_x, target_y, current_monitor, target_monitor, sink,
+        get_cursor_pos, sleep, now, settle_poll_interval_seconds, settle_stable_reads,
+        settle_max_wait_seconds, monitor_rects, crossing_step_px, max_crossing_attempts,
+        safe_margin_px, stuck_confirmation_count,
+    )
+
+
 def click_at_target(
     hwnd,
     click_rect: tuple[int, int, int, int],
@@ -407,6 +550,7 @@ def click_at_target(
     max_crossing_attempts: int = DEFAULT_MAX_CROSSING_ATTEMPTS,
     safe_margin_px: int = DEFAULT_SAFE_MARGIN_PX,
     stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
+    crossing_mode: str = CROSSING_MODE_REACTIVE,
     gain_estimate: GainEstimate | None = None,
 ) -> None:
     """Moves the cursor toward click_rect's center (window-relative),
@@ -422,7 +566,8 @@ def click_at_target(
 
     If the target is confirmed (via real monitor geometry) to be on a
     different monitor than the cursor currently is, crosses to it first -
-    see _cross_to_target_monitor().
+    see _cross_monitors(), CROSSING_MODE_REACTIVE (default) or
+    CROSSING_MODE_PROACTIVE.
 
     Raises CursorConvergenceError instead of clicking if the cursor still
     isn't within tolerance_px after max_iterations corrective moves."""
@@ -462,12 +607,12 @@ def click_at_target(
             if current_monitor is not None and current_monitor != target_monitor:
                 logger.info("click_at_target: at (%d, %d), not on the target's monitor - "
                             "crossing before continuing", cur_x, cur_y)
-                cur_x, cur_y = _cross_to_target_monitor(
+                cur_x, cur_y = _cross_monitors(
                     cur_x, cur_y, target_x, target_y, current_monitor, target_monitor, sink,
                     get_cursor_pos, sleep, now, settle_poll_interval_seconds,
                     settle_stable_reads, settle_max_wait_seconds, monitor_rects,
                     crossing_step_px, max_crossing_attempts, safe_margin_px,
-                    stuck_confirmation_count,
+                    stuck_confirmation_count, crossing_mode,
                 )
                 # New territory - the gain estimate from wherever we were
                 # before doesn't necessarily apply here, and neither does

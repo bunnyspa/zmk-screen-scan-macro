@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
 
 from .command import Command, CommandSink  # noqa: E402
-from .cursor import GainEstimate, click_at_target  # noqa: E402
+from .cursor import CROSSING_MODE_REACTIVE, GainEstimate, click_at_target  # noqa: E402
 from .focus import (  # noqa: E402
     DEFAULT_MAX_FOCUS_WAIT_SECONDS,
     FOCUS_POLICY_FOCUS_AND_RESUME,
@@ -75,6 +75,7 @@ class MacroRunner:
                  focus_policy: str = FOCUS_POLICY_PAUSE_UNTIL_FOCUSED,
                  focus_poll_interval_ms: int = DEFAULT_FOCUS_POLL_INTERVAL_MS,
                  max_focus_wait_seconds: float = DEFAULT_MAX_FOCUS_WAIT_SECONDS,
+                 crossing_mode: str = CROSSING_MODE_REACTIVE,
                  is_window_focused=is_window_focused, focus_window=focus_window):
         self._graph = graph
         self._capture = capture
@@ -84,6 +85,7 @@ class MacroRunner:
         self._focus_policy = focus_policy
         self._focus_poll_interval_ms = focus_poll_interval_ms
         self._max_focus_wait_seconds = max_focus_wait_seconds
+        self._crossing_mode = crossing_mode
         self._is_window_focused = is_window_focused
         self._focus_window = focus_window
         # Shared across every click_at_target() call for the life of this
@@ -176,7 +178,8 @@ class MacroRunner:
         elif action_type == "click":
             button = _MOUSE_BUTTONS[node.get("mouse_button", "left")]
             click_at_target(self._hwnd, tuple(node["click_rect"]), self._sink, button,
-                            gain_estimate=self._cursor_gain_estimate)
+                            gain_estimate=self._cursor_gain_estimate,
+                            crossing_mode=self._crossing_mode)
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
