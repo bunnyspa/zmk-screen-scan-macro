@@ -195,6 +195,41 @@ def test_click_at_target_defaults_to_left_button():
     assert click_cmd.mouse_buttons == wire.MOUSE_BUTTON_LEFT
 
 
+def test_click_at_target_reuses_persisted_gain_estimate_across_calls():
+    # A second click sharing the same GainEstimate object (already
+    # populated with a learned gain from the first click) shouldn't need
+    # to re-probe from scratch - it should converge in fewer moves than
+    # the first call had to.
+    gain_estimate = cursor_module.GainEstimate()
+    sink = SimulatingSink(start_pos=(0, 0), move_ratio=4.0)
+
+    click_at_target(
+        hwnd=1,
+        click_rect=(0, 0, 20, 20),  # center (10, 10)
+        sink=sink,
+        get_cursor_pos=sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (0, 0),
+        gain_estimate=gain_estimate,
+        **_NO_SETTLE_DELAY,
+    )
+    first_call_move_count = len([c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE])
+    assert gain_estimate.x != 1.0  # learned something real, not still neutral
+
+    second_sink = SimulatingSink(start_pos=(0, 0), move_ratio=4.0)
+    click_at_target(
+        hwnd=1,
+        click_rect=(0, 0, 20, 20),
+        sink=second_sink,
+        get_cursor_pos=second_sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (200, 200),  # a different target this time
+        gain_estimate=gain_estimate,  # same, already-learned estimate
+        **_NO_SETTLE_DELAY,
+    )
+    second_call_move_count = len([c for c in second_sink.sent if c.action == wire.ACTION_MOUSE_MOVE])
+
+    assert second_call_move_count < first_call_move_count
+
+
 # -- cross-monitor crossing (real geometry, checked before the normal approach) --
 
 _SIDE_BY_SIDE_MONITORS = [(0, 0, 1000, 1000), (1000, 0, 2000, 1000)]
@@ -226,6 +261,63 @@ class StuckThenFreeSink(RecordingCommandSink):
 
     def get_pos(self):
         return self.pos
+
+
+class OvershootOnceThenNormalSink(RecordingCommandSink):
+    """Applies a large amplifying ratio to the first amplified_move_count
+    MOUSE_MOVE commands (simulating an acceleration-curve spike that
+    overshoots past the intended monitor onto another one entirely), then
+    a normal ratio to every move after that."""
+
+    def __init__(self, start_pos, amplified_move_count, amplified_ratio, normal_ratio=1.0):
+        super().__init__()
+        self.pos = start_pos
+        self._amplified_move_count = amplified_move_count
+        self._amplified_ratio = amplified_ratio
+        self._normal_ratio = normal_ratio
+        self._move_send_count = 0
+
+    def send(self, command: Command) -> None:
+        super().send(command)
+        if command.action != wire.ACTION_MOUSE_MOVE:
+            return
+        self._move_send_count += 1
+        ratio = (
+            self._amplified_ratio if self._move_send_count <= self._amplified_move_count
+            else self._normal_ratio
+        )
+        self.pos = (self.pos[0] + round(command.dx * ratio), self.pos[1] + round(command.dy * ratio))
+
+    def get_pos(self):
+        return self.pos
+
+
+def test_click_at_target_recrosses_when_gain_adaptation_overshoots_onto_a_wrong_monitor():
+    # Reproduces the exact real-hardware failure: cursor starts already on
+    # the target's monitor (no initial crossing needed), but the very
+    # first gain-adaptive move gets hit by a huge acceleration spike and
+    # overshoots straight past the target monitor onto a third one
+    # entirely. Without re-checking monitor membership every attempt (not
+    # just once up front), this got permanently stuck there on real
+    # hardware; with it, click_at_target should notice and cross back.
+    monitors = [(0, 0, 1000, 1000), (1000, 0, 2000, 1000), (2000, 0, 3000, 1000)]
+    sink = OvershootOnceThenNormalSink(
+        start_pos=(1100, 500), amplified_move_count=1, amplified_ratio=20.0, normal_ratio=1.0,
+    )
+
+    click_at_target(
+        hwnd=1,
+        click_rect=(1490, 490, 20, 20),  # center (1500, 500), inside the middle monitor
+        sink=sink,
+        get_cursor_pos=sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (0, 0),
+        get_monitor_rects=lambda: monitors,
+        sleep=lambda seconds: None,
+        now=lambda: 0.0,
+    )
+
+    assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
+    assert abs(sink.pos[0] - 1500) <= 2 and abs(sink.pos[1] - 500) <= 2
 
 
 def test_click_at_target_crosses_to_target_monitor_before_normal_approach():

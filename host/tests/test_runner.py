@@ -146,7 +146,7 @@ def test_decision_wait_until_true_polls_until_match(tmp_path):
 def test_action_click_delegates_to_cursor_click_at_target(monkeypatch):
     calls = []
 
-    def fake_click_at_target(hwnd, click_rect, sink, mouse_button):
+    def fake_click_at_target(hwnd, click_rect, sink, mouse_button, gain_estimate=None):
         calls.append((hwnd, click_rect, mouse_button))
         sink.send(Command(action=wire.ACTION_MOUSE_MOVE, dx=1, dy=2))
         sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=wire.MOUSE_BUTTON_RIGHT))

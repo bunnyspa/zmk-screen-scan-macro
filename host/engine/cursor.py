@@ -125,6 +125,18 @@ class CursorConvergenceError(RuntimeError):
     anyway - a misclick is worse than stopping the macro."""
 
 
+class GainEstimate:
+    """Persists the learned per-axis pointer-acceleration gain across
+    multiple click_at_target() calls, so repeat clicks in the same run
+    don't re-probe from scratch every time. Own one per macro run (see
+    MacroRunner) and pass it to every click_at_target() call; omit it to
+    get the old call-scoped behavior (always starts neutral)."""
+
+    def __init__(self):
+        self.x = 1.0
+        self.y = 1.0
+
+
 def get_cursor_pos() -> tuple[int, int]:
     pt = wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(pt))
@@ -341,12 +353,18 @@ def click_at_target(
     crossing_step_px: int = DEFAULT_CROSSING_STEP_PX,
     max_crossing_attempts: int = DEFAULT_MAX_CROSSING_ATTEMPTS,
     safe_margin_px: int = DEFAULT_SAFE_MARGIN_PX,
+    gain_estimate: GainEstimate | None = None,
 ) -> None:
     """Moves the cursor toward click_rect's center (window-relative),
     re-measuring after each move and adapting to whatever the actual
     movement/requested-movement ratio turns out to be, then clicks.
     get_cursor_pos/get_window_screen_origin/sleep/now are injectable for
     testing without touching real win32 calls or a real clock.
+
+    Pass a GainEstimate owned by the caller (see MacroRunner) to carry
+    the learned gain across multiple clicks in the same run, so repeat
+    clicks don't re-probe from scratch every time - omit it to always
+    start neutral (a fresh GainEstimate, discarded after this call).
 
     If the target is confirmed (via real monitor geometry) to be on a
     different monitor than the cursor currently is, crosses to it first -
@@ -365,23 +383,45 @@ def click_at_target(
     cur_x, cur_y = get_cursor_pos()
 
     monitor_rects = get_monitor_rects()
-    current_monitor = find_containing_monitor(cur_x, cur_y, monitor_rects)
     target_monitor = find_containing_monitor(target_x, target_y, monitor_rects)
-    if current_monitor is not None and target_monitor is not None and current_monitor != target_monitor:
-        logger.info("click_at_target: target (%d, %d) is on a different monitor than the "
-                    "cursor's current position (%d, %d) - crossing before the normal approach",
-                    target_x, target_y, cur_x, cur_y)
-        cur_x, cur_y = _cross_to_target_monitor(
-            cur_x, cur_y, target_x, target_y, current_monitor, target_monitor, sink,
-            get_cursor_pos, sleep, now, settle_poll_interval_seconds, settle_stable_reads,
-            settle_max_wait_seconds, monitor_rects, crossing_step_px, max_crossing_attempts,
-            safe_margin_px,
-        )
 
-    gain_x = 1.0
-    gain_y = 1.0
+    if gain_estimate is None:
+        gain_estimate = GainEstimate()
+        has_prior_gain_data = False
+    else:
+        has_prior_gain_data = gain_estimate.x != 1.0 or gain_estimate.y != 1.0
+    gain_x = gain_estimate.x
+    gain_y = gain_estimate.y
+    just_crossed = False
 
     for attempt in range(1, max_iterations + 1):
+        # Checked every attempt, not just once up front: gain adaptation's
+        # own amplification overshoot can wander the cursor off the target
+        # monitor entirely mid-approach (confirmed against real hardware -
+        # a crossing that succeeded initially, then a later gain-adaptive
+        # move overshot back onto a third monitor and got stuck there,
+        # with no recovery, since the one-time upfront check never got a
+        # chance to run again). Re-cross whenever this happens, wherever
+        # it happens in the loop.
+        if target_monitor is not None:
+            current_monitor = find_containing_monitor(cur_x, cur_y, monitor_rects)
+            if current_monitor is not None and current_monitor != target_monitor:
+                logger.info("click_at_target: at (%d, %d), not on the target's monitor - "
+                            "crossing before continuing", cur_x, cur_y)
+                cur_x, cur_y = _cross_to_target_monitor(
+                    cur_x, cur_y, target_x, target_y, current_monitor, target_monitor, sink,
+                    get_cursor_pos, sleep, now, settle_poll_interval_seconds,
+                    settle_stable_reads, settle_max_wait_seconds, monitor_rects,
+                    crossing_step_px, max_crossing_attempts, safe_margin_px,
+                )
+                # New territory - the gain estimate from wherever we were
+                # before doesn't necessarily apply here, and neither does
+                # a full-magnitude request (same reasoning as attempt 1).
+                gain_x = 1.0
+                gain_y = 1.0
+                gain_estimate.x, gain_estimate.y = gain_x, gain_y
+                just_crossed = True
+
         dx = target_x - cur_x
         dy = target_y - cur_y
         if abs(dx) <= tolerance_px and abs(dy) <= tolerance_px:
@@ -392,8 +432,16 @@ def click_at_target(
 
         # Attempt 1 has no gain data yet - treat it as a small calibration
         # probe rather than a blind full-distance guess (see
-        # DEFAULT_INITIAL_PROBE_MAX_PX above).
-        step_cap = initial_probe_max_px if attempt == 1 else max_step_px
+        # DEFAULT_INITIAL_PROBE_MAX_PX above) - unless a caller-owned
+        # GainEstimate already has real data from an earlier click in this
+        # run, in which case trust it instead of re-probing. Same
+        # reasoning applies right after a (re-)crossing, regardless of
+        # prior data, since it's new territory either way.
+        if just_crossed or (attempt == 1 and not has_prior_gain_data):
+            step_cap = initial_probe_max_px
+            just_crossed = False
+        else:
+            step_cap = max_step_px
         need_x = abs(dx) > tolerance_px
         need_y = abs(dy) > tolerance_px
         request_dx = _nonzero_round(_clamp(dx / gain_x, -step_cap, step_cap)) if need_x else 0
@@ -417,7 +465,17 @@ def click_at_target(
 
         gain_x = _update_gain(gain_x, request_dx, actual_dx)
         gain_y = _update_gain(gain_y, request_dy, actual_dy)
+        gain_estimate.x, gain_estimate.y = gain_x, gain_y
         cur_x, cur_y = new_x, new_y
+
+        # Checked again immediately, not just at the top of the next
+        # iteration - a move can land exactly on target on the very last
+        # allowed attempt, with no further iteration left to notice it.
+        if abs(target_x - cur_x) <= tolerance_px and abs(target_y - cur_y) <= tolerance_px:
+            logger.info("click_at_target: converged after %d move(s), at (%d, %d)",
+                        attempt, cur_x, cur_y)
+            sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=mouse_button))
+            return
 
     dx = target_x - cur_x
     dy = target_y - cur_y

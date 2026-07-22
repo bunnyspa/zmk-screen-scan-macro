@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
 
 from .command import Command, CommandSink  # noqa: E402
-from .cursor import click_at_target  # noqa: E402
+from .cursor import GainEstimate, click_at_target  # noqa: E402
 from .focus import (  # noqa: E402
     DEFAULT_MAX_FOCUS_WAIT_SECONDS,
     FOCUS_POLICY_FOCUS_AND_RESUME,
@@ -86,6 +86,11 @@ class MacroRunner:
         self._max_focus_wait_seconds = max_focus_wait_seconds
         self._is_window_focused = is_window_focused
         self._focus_window = focus_window
+        # Shared across every click_at_target() call for the life of this
+        # run, so repeat clicks reuse the learned pointer-acceleration
+        # gain instead of re-probing from scratch each time. A fresh
+        # MacroRunner (a new Run) starts this neutral again.
+        self._cursor_gain_estimate = GainEstimate()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -170,7 +175,8 @@ class MacroRunner:
             self._sink.send(Command(action=wire.ACTION_KEY_PRESS, keycodes=(keycode,)))
         elif action_type == "click":
             button = _MOUSE_BUTTONS[node.get("mouse_button", "left")]
-            click_at_target(self._hwnd, tuple(node["click_rect"]), self._sink, button)
+            click_at_target(self._hwnd, tuple(node["click_rect"]), self._sink, button,
+                            gain_estimate=self._cursor_gain_estimate)
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
