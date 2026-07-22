@@ -115,6 +115,32 @@ def test_click_at_target_caps_the_first_attempt_as_a_calibration_probe():
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
 
 
+def test_click_at_target_preserves_direction_when_capping_an_asymmetric_delta():
+    # Remaining delta is mostly horizontal (dx far bigger than dy) -
+    # reproduces the exact real-hardware finding: independently clamping
+    # each axis to the same cap turned (1526, 162) into a 45-degree
+    # (80, 80) request, which then produced a large, entirely unnecessary
+    # vertical swing once amplified. The capped request should preserve
+    # the original direction instead - dy should end up much smaller than
+    # dx, not equal to it.
+    sink = SimulatingSink(start_pos=(0, 0), move_ratio=1.0)
+
+    click_at_target(
+        hwnd=1,
+        click_rect=(0, 0, 20, 20),  # small target, so origin alone sets the big delta
+        sink=sink,
+        get_cursor_pos=sink.get_pos,
+        get_window_screen_origin=lambda hwnd: (1526, 162),
+        **_NO_SETTLE_DELAY,
+    )
+
+    move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
+    first = move_commands[0]
+    assert first.dx == cursor_module.DEFAULT_INITIAL_PROBE_MAX_PX  # hits the cap
+    assert 0 < first.dy < first.dx  # scaled down proportionally, not clamped to the same cap
+    assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
+
+
 def test_click_at_target_corrects_when_move_undershoots():
     # move_ratio=0.5 simulates every requested move only landing halfway -
     # click_at_target should keep sending corrective moves (adapting its

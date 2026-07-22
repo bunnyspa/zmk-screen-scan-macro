@@ -36,7 +36,14 @@ changing global Windows mouse settings), click_at_target():
     by the acceleration curve and overshoot before there's any real
     measurement to correct with;
   - caps any single request's magnitude as a backstop against a
-    wrong/noisy gain estimate flinging the cursor across the screen.
+    wrong/noisy gain estimate flinging the cursor across the screen -
+    scaling both axes down by the same factor (see _scale_to_cap)
+    instead of clamping each axis independently, which would distort the
+    request's direction whenever |dx| and |dy| differ a lot (confirmed
+    against real hardware: a mostly-horizontal remaining delta got
+    clamped into a 45-degree request, and once amplified, produced a
+    large, entirely unnecessary swing on the axis that barely needed
+    correcting at all).
 
 Separately, if the target is on a *different* monitor than the cursor
 currently is (checked proactively via real monitor geometry -
@@ -166,6 +173,22 @@ def find_window(title: str):
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _scale_to_cap(dx: float, dy: float, cap: float) -> tuple[float, float]:
+    """Scales (dx, dy) down proportionally so neither component exceeds
+    cap in magnitude, preserving direction - unlike clamping each axis to
+    the same cap independently, which distorts direction whenever |dx|
+    and |dy| differ substantially. Confirmed against real hardware: a
+    remaining delta of (1526, 162) - mostly horizontal - got clamped to
+    (80, 80), a 45-degree request; once amplified by the pointer curve,
+    that produced a large, entirely unnecessary vertical swing that a
+    proportionally-scaled (80, 8)-ish request wouldn't have caused."""
+    largest = max(abs(dx), abs(dy))
+    if largest <= cap or largest == 0:
+        return dx, dy
+    scale = cap / largest
+    return dx * scale, dy * scale
 
 
 def _nonzero_round(value: float) -> int:
@@ -444,8 +467,9 @@ def click_at_target(
             step_cap = max_step_px
         need_x = abs(dx) > tolerance_px
         need_y = abs(dy) > tolerance_px
-        request_dx = _nonzero_round(_clamp(dx / gain_x, -step_cap, step_cap)) if need_x else 0
-        request_dy = _nonzero_round(_clamp(dy / gain_y, -step_cap, step_cap)) if need_y else 0
+        scaled_dx, scaled_dy = _scale_to_cap(dx / gain_x, dy / gain_y, step_cap)
+        request_dx = _nonzero_round(scaled_dx) if need_x else 0
+        request_dy = _nonzero_round(scaled_dy) if need_y else 0
 
         logger.info("click_at_target: attempt %d/%d, at (%d, %d), remaining (%d, %d), "
                     "requesting move (%d, %d) [gain estimate (%.2f, %.2f)] toward (%d, %d)",
