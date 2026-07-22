@@ -124,6 +124,13 @@ DEFAULT_MAX_CROSSING_ATTEMPTS = 20
 # How far inside the current monitor's edges a reactive step-back should
 # land, if the straight crossing push gets stuck.
 DEFAULT_SAFE_MARGIN_PX = 100
+# A single zero-effect push could be a settle-timing fluke, not a genuine
+# stuck condition - require this many consecutive non-moving attempts
+# before reacting to it (stepping back, or giving up early). Confirmed
+# against real hardware that grinding all the way to max_crossing_attempts
+# after a step-back that didn't help wastes real time the normal
+# gain-adaptive loop would have used to cross successfully on its own.
+DEFAULT_STUCK_CONFIRMATION_COUNT = 3
 
 
 class CursorConvergenceError(RuntimeError):
@@ -283,17 +290,28 @@ def _cross_to_target_monitor(
     get_cursor_pos, sleep, now,
     settle_poll_interval_seconds: float, settle_stable_reads: int, settle_max_wait_seconds: float,
     monitor_rects, crossing_step_px: int, max_crossing_attempts: int, safe_margin_px: int,
+    stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
 ) -> tuple[int, int]:
     """Pushes straight, one axis at a time, from the monitor the cursor is
     currently on toward the one the target is confirmed to be on -
     re-checking the real geometry after each step rather than counting a
-    fixed number of moves. If a push has zero effect (stuck, e.g. right at
-    a seam or a concave multi-monitor corner), steps back once with a
-    single clean diagonal move to a safe point inside the current
-    monitor's interior, then resumes. Returns wherever the cursor ended up
-    - not guaranteed to have actually crossed if the arrangement or the
-    stuck condition defeats it; the normal gain-adaptive loop takes over
-    from there regardless."""
+    fixed number of moves.
+
+    A single zero-effect push could just be a settle-timing fluke, so
+    stuck_confirmation_count consecutive non-moving attempts are required
+    before reacting to it - first by stepping back once with a single
+    clean diagonal move to a safe point inside the current monitor's
+    interior, then, if that many consecutive attempts are stuck again
+    even after stepping back, by giving up on this dedicated mechanism
+    early (confirmed against real hardware that grinding on to
+    max_crossing_attempts anyway just wastes time the normal gain-adaptive
+    loop would have used to cross on its own - it re-checks monitor
+    membership every attempt and has already been observed succeeding
+    immediately in exactly this situation).
+
+    Returns wherever the cursor ended up - not guaranteed to have
+    actually crossed if the arrangement or the stuck condition defeats
+    it; the normal gain-adaptive loop takes over from there regardless."""
     direction = _crossing_direction(current_monitor, target_monitor)
     if direction is None:
         logger.info("click_at_target: current and target monitors aren't simply "
@@ -302,6 +320,7 @@ def _cross_to_target_monitor(
 
     dir_x, dir_y = direction
     stepped_back = False
+    consecutive_stuck = 0
 
     for attempt in range(1, max_crossing_attempts + 1):
         sink.send(Command(action=wire.ACTION_MOUSE_MOVE,
@@ -321,7 +340,11 @@ def _cross_to_target_monitor(
                         attempt)
             return cur_x, cur_y
 
-        if not moved and not stepped_back:
+        consecutive_stuck = 0 if moved else consecutive_stuck + 1
+        if consecutive_stuck < stuck_confirmation_count:
+            continue
+
+        if not stepped_back:
             # Retreat on the crossing axis itself (away from the seam
             # just pushed into) - a plain "stuck exactly at the seam"
             # case needs this to make any progress at all - and clamp the
@@ -340,9 +363,10 @@ def _cross_to_target_monitor(
                 )
             step_back_dx, step_back_dy = waypoint_x - cur_x, waypoint_y - cur_y
             if step_back_dx != 0 or step_back_dy != 0:
-                logger.info("click_at_target: crossing push got stuck at (%d, %d) - "
-                            "stepping back once to a safe interior point (%d, %d) "
-                            "(single diagonal move)", cur_x, cur_y, waypoint_x, waypoint_y)
+                logger.info("click_at_target: crossing push stuck for %d consecutive "
+                            "attempts at (%d, %d) - stepping back once to a safe interior "
+                            "point (%d, %d) (single diagonal move)", consecutive_stuck,
+                            cur_x, cur_y, waypoint_x, waypoint_y)
                 sink.send(Command(action=wire.ACTION_MOUSE_MOVE, dx=step_back_dx, dy=step_back_dy))
                 cur_x, cur_y = _wait_for_settled_position(
                     get_cursor_pos, sleep, now, settle_poll_interval_seconds,
@@ -350,6 +374,12 @@ def _cross_to_target_monitor(
                 )
                 logger.info("click_at_target: after step-back, now at (%d, %d)", cur_x, cur_y)
             stepped_back = True
+            consecutive_stuck = 0
+        else:
+            logger.info("click_at_target: still stuck for %d consecutive attempts even "
+                        "after stepping back - giving up on the dedicated crossing early "
+                        "and continuing with normal movement", consecutive_stuck)
+            return cur_x, cur_y
 
     logger.info("click_at_target: did not detect crossing into a new monitor after "
                 "%d attempts - continuing with normal movement anyway", max_crossing_attempts)
@@ -376,6 +406,7 @@ def click_at_target(
     crossing_step_px: int = DEFAULT_CROSSING_STEP_PX,
     max_crossing_attempts: int = DEFAULT_MAX_CROSSING_ATTEMPTS,
     safe_margin_px: int = DEFAULT_SAFE_MARGIN_PX,
+    stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
     gain_estimate: GainEstimate | None = None,
 ) -> None:
     """Moves the cursor toward click_rect's center (window-relative),
@@ -436,6 +467,7 @@ def click_at_target(
                     get_cursor_pos, sleep, now, settle_poll_interval_seconds,
                     settle_stable_reads, settle_max_wait_seconds, monitor_rects,
                     crossing_step_px, max_crossing_attempts, safe_margin_px,
+                    stuck_confirmation_count,
                 )
                 # New territory - the gain estimate from wherever we were
                 # before doesn't necessarily apply here, and neither does

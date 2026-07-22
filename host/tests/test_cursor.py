@@ -393,11 +393,12 @@ def test_click_at_target_skips_crossing_when_already_on_target_monitor():
 
 
 def test_click_at_target_steps_back_once_with_a_single_move_when_crossing_gets_stuck():
-    # The first crossing push has zero effect (stuck right at the seam) -
-    # click_at_target should step back exactly once with a single clean
-    # move (not decomposed into many small steps), then keep pushing
-    # until it actually crosses.
-    sink = StuckThenFreeSink(start_pos=(950, 500), blocked_move_count=1, move_ratio=1.0)
+    # The first 3 crossing pushes (DEFAULT_STUCK_CONFIRMATION_COUNT) have
+    # zero effect (stuck right at the seam) - click_at_target should wait
+    # for all 3 to confirm it's not a settle-timing fluke, then step back
+    # exactly once with a single clean move (not decomposed into many
+    # small steps), then keep pushing until it actually crosses.
+    sink = StuckThenFreeSink(start_pos=(950, 500), blocked_move_count=3, move_ratio=1.0)
 
     click_at_target(
         hwnd=1,
@@ -411,12 +412,49 @@ def test_click_at_target_steps_back_once_with_a_single_move_when_crossing_gets_s
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
-    # index 0: the stuck push (blocked, zero effect); index 1: the single
-    # step-back move, retreating on the crossing axis - not many small ticks.
-    assert move_commands[0].dx == cursor_module.DEFAULT_CROSSING_STEP_PX
-    step_back = move_commands[1]
+    # indices 0-2: the 3 stuck pushes (blocked, zero effect, confirming
+    # it's not a fluke); index 3: the single step-back move, retreating
+    # on the crossing axis - not many small ticks.
+    assert all(c.dx == cursor_module.DEFAULT_CROSSING_STEP_PX for c in move_commands[:3])
+    step_back = move_commands[3]
     assert step_back.dx == -cursor_module.DEFAULT_SAFE_MARGIN_PX
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK  # eventually still lands and clicks
+
+
+def test_click_at_target_gives_up_crossing_early_after_step_back_also_fails():
+    # Every push (crossing and the step-back) has zero effect - confirms
+    # click_at_target gives up on the dedicated crossing well before
+    # max_crossing_attempts (20) once it's confirmed stuck even after
+    # stepping back, instead of grinding uselessly to the full budget
+    # (confirmed against real hardware to waste real time the normal
+    # gain-adaptive loop would have used to cross on its own).
+    sink = SimulatingSink(start_pos=(950, 500), move_ratio=0.0)
+
+    with pytest.raises(CursorConvergenceError):
+        click_at_target(
+            hwnd=1,
+            click_rect=(1490, 490, 20, 20),
+            sink=sink,
+            get_cursor_pos=sink.get_pos,
+            get_window_screen_origin=lambda hwnd: (0, 0),
+            get_monitor_rects=lambda: _SIDE_BY_SIDE_MONITORS,
+            sleep=lambda seconds: None,
+            now=lambda: 0.0,
+            # isolates a single crossing invocation - otherwise the main
+            # loop's own per-attempt monitor recheck (a separate, working
+            # feature) would retrigger crossing again on every attempt
+            # since this fake never actually moves.
+            max_iterations=1,
+        )
+
+    crossing_push_commands = [
+        c for c in sink.sent
+        if c.action == wire.ACTION_MOUSE_MOVE and c.dx == cursor_module.DEFAULT_CROSSING_STEP_PX
+    ]
+    # 3 pushes to confirm stuck, a step-back (a different dx, not counted
+    # here), then 3 more pushes to confirm stuck again post-step-back = 6
+    # crossing-step-sized pushes total, well short of max_crossing_attempts.
+    assert len(crossing_push_commands) == 6
 
 
 def test_click_at_target_skips_crossing_when_monitors_not_simply_adjacent():
