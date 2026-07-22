@@ -39,22 +39,23 @@ Action types (byte 2):
 | `0x06` | Mouse button down (hold) |
 | `0x07` | Mouse button up (release) |
 
-## Keyboard -> host (`&ssm_tog` trigger)
+## Keyboard -> host (trigger channel)
 
-Marker `0x4E` ('N' - Notify, host that the toggle was pressed). Stateless -
-firmware doesn't track running/stopped at all, it just fires this on every
-press. The host is the sole owner of the running/stopped boolean, flipping it
-once per event received. This avoids two independent toggles (firmware's and
-the host's) ever drifting out of sync, e.g. after a firmware reboot or
-reconnect.
+Marker `0x4E` ('N' - Notify). Stateless - firmware doesn't track any state at
+all, it just fires this on every press of a trigger key, with byte 2
+identifying which one. The host owns all the actual state (running/stopped,
+pending-confirmation), flipping/resolving it once per event received. This
+avoids independent firmware-side state ever drifting out of sync with the
+host, e.g. after a firmware reboot or reconnect.
 
 | Bytes | Field | Notes |
 |---|---|---|
 | 0 | Marker | `0x4E` |
-| 1-31 | Reserved | zero-padded, no meaningful payload |
+| 1 | Protocol version | `0x01`. Host drops packets from an unrecognized version, never attempts to interpret them. |
+| 2 | Trigger type | `0x00` = `&ssm_tog` (start/stop), `0x01` = `&ssm_confirm` (confirm a pending action) |
+| 3-31 | Reserved | zero-padded, no meaningful payload |
 
 ## Breaking-change discipline
 
 Changing either marker byte, the action-type enum, packet length, or field
-layout requires updating both this repo's firmware and host sides in lockstep,
-same as `zmk-korean-ime-layer` / `korean-ime-reporter-windows`.
+layout requires updating both this repo's firmware and host sides in lockstep.

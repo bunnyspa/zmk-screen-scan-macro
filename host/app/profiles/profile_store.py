@@ -15,7 +15,7 @@ def load(profile_dir):
 
 
 def save(profile_dir, profile_name, session_data, target_window_title='',
-         focus_policy='pause_until_focused'):
+         focus_policy='pause_until_focused', confirmation_mode=False):
     data = {
         'schema_version': SCHEMA_VERSION,
         'profile_name': profile_name,
@@ -27,6 +27,13 @@ def save(profile_dir, profile_name, session_data, target_window_title='',
         # before an action fires - real HID input goes wherever the OS has
         # focus, not to a specific window. See engine/focus.py.
         'focus_policy': focus_policy,
+        # If true, MacroRunner pauses before every click/key-press - moving
+        # the cursor into position (click) or showing what's about to be
+        # pressed (key), then waiting for the OK button or the &ssm_confirm
+        # physical key - instead of running straight through. A profile
+        # used for careful testing can default this on; one already trusted
+        # can leave it off.
+        'confirmation_mode': confirmation_mode,
         'session': session_data,
     }
     os.makedirs(profile_dir, exist_ok=True)
@@ -43,5 +50,6 @@ def empty_session_data(profile_name):
         'profile_name': profile_name,
         'target_window_title': '',
         'focus_policy': 'pause_until_focused',
+        'confirmation_mode': False,
         'session': {},
     }

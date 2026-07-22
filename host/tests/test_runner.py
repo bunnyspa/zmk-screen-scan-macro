@@ -285,3 +285,80 @@ def test_ensure_focus_raises_focus_timeout_instead_of_looping_forever():
     )
     with pytest.raises(FocusTimeoutError):
         runner._ensure_focus()
+
+
+def test_confirmation_mode_key_press_waits_for_confirm_before_sending():
+    shown = []
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        _KEY_PRESS_GRAPH, FakeCapture([None]), sink, hwnd=None,
+        confirmation_mode=True,
+        show_pending_key_press=lambda key_combo: shown.append(key_combo),
+        confirmation_poll_interval_ms=10,
+    )
+    runner.start()
+    time.sleep(0.05)
+    assert shown == ["a"]  # shown the pending key before any command is sent
+    assert not sink.sent  # still waiting for confirmation
+
+    runner.confirm()
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert sink.sent  # proceeded once confirmed
+
+
+def test_confirmation_mode_click_moves_cursor_and_waits_before_clicking(monkeypatch):
+    move_calls = []
+    monkeypatch.setattr(
+        runner_module, "move_cursor_to_target",
+        lambda hwnd, click_rect, sink, **kwargs: move_calls.append((hwnd, click_rect)),
+    )
+    monkeypatch.setattr(runner_module, "get_window_screen_origin", lambda hwnd: (100, 100))
+
+    shown = []
+    sink = RecordingCommandSink()
+    graph = {
+        "start_node": "c1",
+        "nodes": {
+            "c1": {"type": "action", "action_type": "click", "click_rect": [10, 20, 30, 40],
+                   "mouse_button": "right", "out": "c1"},
+        },
+    }
+    runner = MacroRunner(
+        graph, FakeCapture([None]), sink, hwnd=1234,
+        confirmation_mode=True,
+        show_pending_click=lambda screen_rect: shown.append(screen_rect),
+        confirmation_poll_interval_ms=10,
+        is_window_focused=lambda hwnd: True,  # hwnd=1234 isn't a real window
+    )
+    runner.start()
+    time.sleep(0.05)
+
+    assert move_calls  # cursor positioned before waiting for confirmation
+    assert shown == [(110, 120, 30, 40)]  # origin(100,100) + click_rect(10,20,30,40)
+    assert not any(c.action == wire.ACTION_MOUSE_CLICK for c in sink.sent)  # not clicked yet
+
+    runner.confirm()
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert any(c.action == wire.ACTION_MOUSE_CLICK and c.mouse_buttons == wire.MOUSE_BUTTON_RIGHT
+               for c in sink.sent)
+
+
+def test_confirmation_mode_stop_while_waiting_sends_no_action():
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        _KEY_PRESS_GRAPH, FakeCapture([None]), sink, hwnd=None,
+        confirmation_mode=True,
+        confirmation_poll_interval_ms=10,
+    )
+    runner.start()
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert not sink.sent

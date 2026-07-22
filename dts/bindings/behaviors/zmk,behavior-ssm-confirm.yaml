@@ -1,0 +1,7 @@
+# Screen Scan Macro - confirmation-mode confirm key behavior
+
+description: Confirms a pending action (click or key-press) while the screen-scan-macro host engine is paused in confirmation mode
+
+compatible: "zmk,behavior-ssm-confirm"
+
+include: zero_param.yaml

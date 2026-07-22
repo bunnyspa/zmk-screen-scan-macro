@@ -168,24 +168,38 @@ static int screen_scan_macro_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(screen_scan_macro, screen_scan_macro_listener);
 ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
 
-/* ---- Keyboard -> host: &ssm_tog trigger behavior (marker 0x4E) ----
- * Stateless on purpose: firmware doesn't track running/stopped at all, it
- * just notifies the host that the physical toggle was pressed. The host is
- * the only thing that owns a running/stopped boolean, avoiding two
- * independent toggles that could ever drift out of sync (e.g. after a
- * firmware reboot or reconnect). */
+/* ---- Keyboard -> host: trigger channel (marker 0x4E) ----
+ * Stateless on purpose: firmware doesn't track any state at all, it just
+ * notifies the host that a physical trigger key was pressed, and which
+ * one (byte 2 - a trigger-type discriminator so every keyboard->host
+ * stateless trigger shares one marker instead of consuming a new one each
+ * time). The host owns all the actual state (running/stopped,
+ * pending-confirmation), avoiding independent firmware-side state that
+ * could ever drift out of sync (e.g. after a firmware reboot or
+ * reconnect). */
 
-#define SSM_TOG_MARKER 0x4E /* 'N' - Notify (host of the toggle) */
-#define SSM_TOG_PACKET_SIZE 32
+#define SSM_TRIGGER_MARKER 0x4E /* 'N' - Notify */
+#define SSM_TRIGGER_VERSION 0x01
+#define SSM_TRIGGER_PACKET_SIZE 32
 
-static int ssm_tog_pressed(struct zmk_behavior_binding *binding,
-                            struct zmk_behavior_binding_event event) {
-    uint8_t packet[SSM_TOG_PACKET_SIZE] = {0};
-    packet[0] = SSM_TOG_MARKER;
+enum ssm_trigger_type {
+    SSM_TRIGGER_TOG = 0x00,     /* &ssm_tog - start/stop the host engine */
+    SSM_TRIGGER_CONFIRM = 0x01, /* &ssm_confirm - confirm a pending action */
+};
+
+static void send_trigger(uint8_t trigger_type) {
+    uint8_t packet[SSM_TRIGGER_PACKET_SIZE] = {0};
+    packet[0] = SSM_TRIGGER_MARKER;
+    packet[1] = SSM_TRIGGER_VERSION;
+    packet[2] = trigger_type;
 
     raise_raw_hid_sent_event(
         (struct raw_hid_sent_event){.data = packet, .length = sizeof(packet)});
+}
 
+static int ssm_tog_pressed(struct zmk_behavior_binding *binding,
+                            struct zmk_behavior_binding_event event) {
+    send_trigger(SSM_TRIGGER_TOG);
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
@@ -201,3 +215,31 @@ static const struct behavior_driver_api ssm_tog_driver_api = {
 
 BEHAVIOR_DT_INST_DEFINE(0, NULL, NULL, NULL, NULL, POST_KERNEL,
                         CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_tog_driver_api);
+
+/* &ssm_confirm - same trigger channel, different trigger type. */
+
+#undef DT_DRV_COMPAT
+#define DT_DRV_COMPAT zmk_behavior_ssm_confirm
+
+#if !DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+#error "Add a zmk,behavior-ssm-confirm node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
+#endif
+
+static int ssm_confirm_pressed(struct zmk_behavior_binding *binding,
+                                struct zmk_behavior_binding_event event) {
+    send_trigger(SSM_TRIGGER_CONFIRM);
+    return ZMK_BEHAVIOR_OPAQUE;
+}
+
+static int ssm_confirm_released(struct zmk_behavior_binding *binding,
+                                 struct zmk_behavior_binding_event event) {
+    return ZMK_BEHAVIOR_OPAQUE;
+}
+
+static const struct behavior_driver_api ssm_confirm_driver_api = {
+    .binding_pressed = ssm_confirm_pressed,
+    .binding_released = ssm_confirm_released,
+};
+
+BEHAVIOR_DT_INST_DEFINE(0, NULL, NULL, NULL, NULL, POST_KERNEL,
+                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_confirm_driver_api);

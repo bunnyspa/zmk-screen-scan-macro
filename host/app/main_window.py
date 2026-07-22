@@ -12,6 +12,7 @@ from .graph.nodes.decision_node import EVAL_MODE_BRANCH, DecisionNode
 from .graph.nodes.wait_node import WaitNode
 from .profiles.profile_manager import ProfileError, ProfileManager
 from .ui.overlay_controller import OverlayController
+from .ui.overlays import RegionHighlightOverlay
 from .ui.profile_list_panel import ProfileListPanel
 from .hid_link import HidLink, find_device
 from .window_enum import list_visible_windows
@@ -34,6 +35,12 @@ _FOCUS_POLICY_LABELS = {
     FOCUS_POLICY_FOCUS_AND_RESUME: 'If unfocused: focus and resume',
 }
 
+# RegionHighlightOverlay normally auto-closes after duration_ms - in
+# confirmation mode it needs to stay up until the user actually confirms,
+# not on a timer, so it's given a duration far longer than any real wait
+# and closed explicitly once .confirm() fires instead.
+_CONFIRMATION_HIGHLIGHT_DURATION_MS = 3600_000
+
 
 def _first_connected_node_id(port):
     connected = port.connected_ports()
@@ -41,6 +48,12 @@ def _first_connected_node_id(port):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    # Cross-thread marshalling for MacroRunner's confirmation-mode callbacks
+    # (emitted from its background thread, connected to GUI-thread slots) -
+    # same pattern as HidLink's toggle_received/confirm_received.
+    _pending_click_signal = QtCore.pyqtSignal(tuple)
+    _pending_key_press_signal = QtCore.pyqtSignal(str)
+
     def __init__(self):
         super(MainWindow, self).__init__()
         self.setWindowTitle('zmk-screen-scan-macro')
@@ -56,6 +69,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.macro_runner = None
         self.capture = None
+        self._pending_confirmation_overlay = None
         self.hid_link = self._connect_hid()
 
         self._build_ui()
@@ -80,6 +94,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         link = HidLink(dev, self)
         link.toggle_received.connect(self._on_ssm_tog_received)
+        link.confirm_received.connect(self._on_confirm_clicked)
         link.start()
         return link
 
@@ -134,14 +149,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.focus_policy_combo.currentIndexChanged.connect(self._on_focus_policy_edited)
         toolbar.addWidget(self.focus_policy_combo)
 
+        self.confirmation_mode_action = QAction('Confirmation mode', self)
+        self.confirmation_mode_action.setCheckable(True)
+        self.confirmation_mode_action.toggled.connect(self._on_confirmation_mode_edited)
+        toolbar.addAction(self.confirmation_mode_action)
+
         toolbar.addSeparator()
         self.run_action = QAction('Run', self)
         self.run_action.triggered.connect(self._on_run_clicked)
         toolbar.addAction(self.run_action)
 
+        self.confirm_action = QAction('Confirm (OK)', self)
+        self.confirm_action.setToolTip(
+            'Confirms a pending click/key-press in confirmation mode - same as '
+            'pressing the &ssm_confirm physical key.'
+        )
+        self.confirm_action.triggered.connect(self._on_confirm_clicked)
+        toolbar.addAction(self.confirm_action)
+
         toolbar.addSeparator()
         self.start_node_label = QtWidgets.QLabel('Start: (none)')
         toolbar.addWidget(self.start_node_label)
+
+        self.pending_action_label = QtWidgets.QLabel('')
+        toolbar.addWidget(self.pending_action_label)
 
     def _wire_signals(self):
         self.graph_widget.graph.node_created.connect(self._on_node_created)
@@ -153,6 +184,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.profile_list_panel.rename_requested.connect(self._on_rename_profile)
         self.profile_list_panel.duplicate_requested.connect(self._on_duplicate_profile)
         self.profile_list_panel.delete_requested.connect(self._on_delete_profile)
+
+        self._pending_click_signal.connect(self._show_pending_click_on_gui_thread)
+        self._pending_key_press_signal.connect(self._show_pending_key_press_on_gui_thread)
 
     # -- node wiring -----------------------------------------------------
 
@@ -190,6 +224,53 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_focus_policy(self, focus_policy):
         index = self.focus_policy_combo.findData(focus_policy)
         self.focus_policy_combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _current_confirmation_mode(self):
+        if not hasattr(self, 'confirmation_mode_action'):
+            return False
+        return self.confirmation_mode_action.isChecked()
+
+    def _set_confirmation_mode(self, confirmation_mode):
+        self.confirmation_mode_action.setChecked(bool(confirmation_mode))
+
+    def _on_confirmation_mode_edited(self, _checked):
+        if self.current_profile is not None:
+            self.graph_widget.mark_dirty()
+
+    def _on_confirm_clicked(self):
+        if self.macro_runner is not None:
+            self.macro_runner.confirm()
+        self._clear_pending_indicator()
+
+    def _clear_pending_indicator(self):
+        self.pending_action_label.setText('')
+        if self._pending_confirmation_overlay is not None:
+            self._pending_confirmation_overlay.close()
+            self._pending_confirmation_overlay = None
+
+    def _show_pending_click(self, screen_rect):
+        """MacroRunner callback (confirmation mode) - runs on the
+        MacroRunner background thread; emitting a Qt signal marshals the
+        actual overlay creation onto the GUI thread automatically (same
+        cross-thread pattern as HidLink's toggle_received/confirm_received)."""
+        self._pending_click_signal.emit(screen_rect)
+
+    def _show_pending_click_on_gui_thread(self, screen_rect):
+        self._clear_pending_indicator()
+        self.pending_action_label.setText('Pending: click (confirm to proceed)')
+        self._pending_confirmation_overlay = RegionHighlightOverlay(
+            screen_rect, duration_ms=_CONFIRMATION_HIGHLIGHT_DURATION_MS,
+        )
+        self._pending_confirmation_overlay.show()
+
+    def _show_pending_key_press(self, key_combo):
+        """MacroRunner callback (confirmation mode) - see
+        _show_pending_click's threading note."""
+        self._pending_key_press_signal.emit(key_combo)
+
+    def _show_pending_key_press_on_gui_thread(self, key_combo):
+        self._clear_pending_indicator()
+        self.pending_action_label.setText(f'Pending: press "{key_combo}" (confirm to proceed)')
 
     def _refresh_window_list(self):
         """Repopulates the dropdown with currently visible window titles,
@@ -330,6 +411,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.macro_runner = MacroRunner(
             engine_graph, self.capture, sink, hwnd=hwnd, profile_dir=profile_dir,
             focus_policy=self._current_focus_policy(),
+            confirmation_mode=self._current_confirmation_mode(),
+            show_pending_click=self._show_pending_click,
+            show_pending_key_press=self._show_pending_key_press,
         )
         self.macro_runner.start()
         self.run_action.setText('Stop')
@@ -342,6 +426,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.capture.stop()
             self.capture = None
         self.run_action.setText('Run')
+        self._clear_pending_indicator()
 
     # -- profile list handling -------------------------------------------
 
@@ -364,12 +449,13 @@ class MainWindow(QtWidgets.QMainWindow):
         return result == QtWidgets.QMessageBox.Discard
 
     def _load_profile(self, name):
-        target_window_title, focus_policy = serialization.load_profile_into_graph(
+        target_window_title, focus_policy, confirmation_mode = serialization.load_profile_into_graph(
             self.profile_manager, self.graph_widget, name,
         )
         self.current_profile = name
         self.target_window_edit.setCurrentText(target_window_title)
         self._set_focus_policy(focus_policy)
+        self._set_confirmation_mode(confirmation_mode)
         for node in self.graph_widget.graph.all_nodes():
             self._wire_node(node)
             if hasattr(node, 'resolve_thumbnail'):
@@ -385,6 +471,7 @@ class MainWindow(QtWidgets.QMainWindow):
             serialization.save_graph_to_profile(
                 self.profile_manager, self.graph_widget, self.current_profile,
                 self._current_target_window_title(), self._current_focus_policy(),
+                self._current_confirmation_mode(),
             )
         except ProfileError as exc:
             QtWidgets.QMessageBox.warning(self, 'Save Failed', str(exc))
@@ -455,6 +542,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graph_widget.new_graph()
             self.target_window_edit.setCurrentText('')
             self._set_focus_policy(FOCUS_POLICY_PAUSE_UNTIL_FOCUSED)
+            self._set_confirmation_mode(False)
             self._set_canvas_enabled(False)
             self.settings.remove(LAST_PROFILE_SETTINGS_KEY)
         self._refresh_profile_list(select=self.current_profile)

@@ -46,7 +46,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
 
 from .command import Command, CommandSink  # noqa: E402
-from .cursor import CROSSING_MODE_REACTIVE, GainEstimate, click_at_target  # noqa: E402
+from .cursor import (  # noqa: E402
+    CROSSING_MODE_REACTIVE,
+    GainEstimate,
+    click_at_target,
+    get_window_screen_origin,
+    move_cursor_to_target,
+)
 from .focus import (  # noqa: E402
     DEFAULT_MAX_FOCUS_WAIT_SECONDS,
     FOCUS_POLICY_FOCUS_AND_RESUME,
@@ -61,6 +67,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL_MS = 200
 DEFAULT_FOCUS_POLL_INTERVAL_MS = 300
+DEFAULT_CONFIRMATION_POLL_INTERVAL_MS = 100
 
 _MOUSE_BUTTONS = {
     "left": wire.MOUSE_BUTTON_LEFT,
@@ -76,7 +83,10 @@ class MacroRunner:
                  focus_poll_interval_ms: int = DEFAULT_FOCUS_POLL_INTERVAL_MS,
                  max_focus_wait_seconds: float = DEFAULT_MAX_FOCUS_WAIT_SECONDS,
                  crossing_mode: str = CROSSING_MODE_REACTIVE,
-                 is_window_focused=is_window_focused, focus_window=focus_window):
+                 is_window_focused=is_window_focused, focus_window=focus_window,
+                 confirmation_mode: bool = False,
+                 show_pending_click=None, show_pending_key_press=None,
+                 confirmation_poll_interval_ms: int = DEFAULT_CONFIRMATION_POLL_INTERVAL_MS):
         self._graph = graph
         self._capture = capture
         self._sink = sink
@@ -93,8 +103,25 @@ class MacroRunner:
         # gain instead of re-probing from scratch each time. A fresh
         # MacroRunner (a new Run) starts this neutral again.
         self._cursor_gain_estimate = GainEstimate()
+        # Confirmation mode: before each click/key-press, show what's about
+        # to happen (show_pending_click/show_pending_key_press - injected,
+        # since showing an overlay/preview is UI-thread work) and block
+        # until .confirm() is called - from the app's OK button or the
+        # &ssm_confirm physical key (see hid_link.py) - or a stop is
+        # requested.
+        self._confirmation_mode = confirmation_mode
+        self._show_pending_click = show_pending_click
+        self._show_pending_key_press = show_pending_key_press
+        self._confirmation_poll_interval_ms = confirmation_poll_interval_ms
+        self._confirmation_event = threading.Event()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def confirm(self) -> None:
+        """Call from the OK button or the &ssm_confirm physical key
+        handler to resolve a pending _await_confirmation() wait. A no-op
+        if nothing is currently pending."""
+        self._confirmation_event.set()
 
     def start(self) -> None:
         if self._thread is not None:
@@ -167,6 +194,24 @@ class MacroRunner:
 
         return False
 
+    def _await_confirmation(self, kind: str, details: dict) -> bool:
+        """Shows the pending action via the injected UI callback (a
+        no-op if none was given), then blocks (interruptibly) until
+        .confirm() is called or a stop is requested. Returns False if
+        stopped while waiting - callers must not proceed with the action
+        in that case."""
+        self._confirmation_event.clear()
+        if kind == "click" and self._show_pending_click is not None:
+            self._show_pending_click(details["screen_rect"])
+        elif kind == "key_press" and self._show_pending_key_press is not None:
+            self._show_pending_key_press(details["key_combo"])
+
+        poll_interval = self._confirmation_poll_interval_ms / 1000.0
+        while not self._stop_requested.is_set():
+            if self._confirmation_event.wait(timeout=poll_interval):
+                return True
+        return False
+
     def _run_action(self, node: dict) -> None:
         if not self._ensure_focus():
             return
@@ -174,12 +219,27 @@ class MacroRunner:
         action_type = node["action_type"]
         if action_type == "key_press":
             keycode = wire.keycode_for_letter(node["key_combo"])
+            if self._confirmation_mode:
+                if not self._await_confirmation("key_press", {"key_combo": node["key_combo"]}):
+                    return
             self._sink.send(Command(action=wire.ACTION_KEY_PRESS, keycodes=(keycode,)))
         elif action_type == "click":
             button = _MOUSE_BUTTONS[node.get("mouse_button", "left")]
-            click_at_target(self._hwnd, tuple(node["click_rect"]), self._sink, button,
-                            gain_estimate=self._cursor_gain_estimate,
-                            crossing_mode=self._crossing_mode)
+            click_rect = tuple(node["click_rect"])
+            if self._confirmation_mode:
+                move_cursor_to_target(self._hwnd, click_rect, self._sink,
+                                      gain_estimate=self._cursor_gain_estimate,
+                                      crossing_mode=self._crossing_mode)
+                origin_x, origin_y = get_window_screen_origin(self._hwnd)
+                x, y, w, h = click_rect
+                screen_rect = (origin_x + x, origin_y + y, w, h)
+                if not self._await_confirmation("click", {"screen_rect": screen_rect}):
+                    return
+                self._sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=button))
+            else:
+                click_at_target(self._hwnd, click_rect, self._sink, button,
+                                gain_estimate=self._cursor_gain_estimate,
+                                crossing_mode=self._crossing_mode)
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 

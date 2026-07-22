@@ -529,11 +529,10 @@ def _cross_monitors(
     )
 
 
-def click_at_target(
+def move_cursor_to_target(
     hwnd,
     click_rect: tuple[int, int, int, int],
     sink: CommandSink,
-    mouse_button: int = wire.MOUSE_BUTTON_LEFT,
     get_cursor_pos=get_cursor_pos,
     get_window_screen_origin=get_window_screen_origin,
     sleep=time.sleep,
@@ -552,10 +551,15 @@ def click_at_target(
     stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
     crossing_mode: str = CROSSING_MODE_REACTIVE,
     gain_estimate: GainEstimate | None = None,
-) -> None:
+) -> tuple[int, int]:
     """Moves the cursor toward click_rect's center (window-relative),
     re-measuring after each move and adapting to whatever the actual
-    movement/requested-movement ratio turns out to be, then clicks.
+    movement/requested-movement ratio turns out to be - the same logic
+    click_at_target() uses, minus actually clicking. Split out so a
+    caller (confirmation mode - see MacroRunner) can pause between the
+    cursor arriving and the click being sent, e.g. to highlight the
+    target region and wait for the user to confirm before the click
+    itself goes out. Returns the final (x, y) once within tolerance_px.
     get_cursor_pos/get_window_screen_origin/sleep/now are injectable for
     testing without touching real win32 calls or a real clock.
 
@@ -569,8 +573,8 @@ def click_at_target(
     see _cross_monitors(), CROSSING_MODE_REACTIVE (default) or
     CROSSING_MODE_PROACTIVE.
 
-    Raises CursorConvergenceError instead of clicking if the cursor still
-    isn't within tolerance_px after max_iterations corrective moves."""
+    Raises CursorConvergenceError if the cursor still isn't within
+    tolerance_px after max_iterations corrective moves."""
     x, y, w, h = click_rect
     target_client_x = x + w // 2
     target_client_y = y + h // 2
@@ -605,7 +609,7 @@ def click_at_target(
         if target_monitor is not None:
             current_monitor = find_containing_monitor(cur_x, cur_y, monitor_rects)
             if current_monitor is not None and current_monitor != target_monitor:
-                logger.info("click_at_target: at (%d, %d), not on the target's monitor - "
+                logger.info("move_cursor_to_target: at (%d, %d), not on the target's monitor - "
                             "crossing before continuing", cur_x, cur_y)
                 cur_x, cur_y = _cross_monitors(
                     cur_x, cur_y, target_x, target_y, current_monitor, target_monitor, sink,
@@ -625,10 +629,9 @@ def click_at_target(
         dx = target_x - cur_x
         dy = target_y - cur_y
         if abs(dx) <= tolerance_px and abs(dy) <= tolerance_px:
-            logger.info("click_at_target: converged after %d move(s), at (%d, %d), "
+            logger.info("move_cursor_to_target: converged after %d move(s), at (%d, %d), "
                         "remaining delta (%d, %d)", attempt - 1, cur_x, cur_y, dx, dy)
-            sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=mouse_button))
-            return
+            return cur_x, cur_y
 
         # Attempt 1 has no gain data yet - treat it as a small calibration
         # probe rather than a blind full-distance guess (see
@@ -648,7 +651,7 @@ def click_at_target(
         request_dx = _nonzero_round(scaled_dx) if need_x else 0
         request_dy = _nonzero_round(scaled_dy) if need_y else 0
 
-        logger.info("click_at_target: attempt %d/%d, at (%d, %d), remaining (%d, %d), "
+        logger.info("move_cursor_to_target: attempt %d/%d, at (%d, %d), remaining (%d, %d), "
                     "requesting move (%d, %d) [gain estimate (%.2f, %.2f)] toward (%d, %d)",
                     attempt, max_iterations, cur_x, cur_y, dx, dy, request_dx, request_dy,
                     gain_x, gain_y, target_x, target_y)
@@ -660,8 +663,8 @@ def click_at_target(
         )
         actual_dx = new_x - cur_x
         actual_dy = new_y - cur_y
-        logger.info("click_at_target: attempt %d/%d, requested (%d, %d), actual movement "
-                    "(%d, %d), now at (%d, %d)", attempt, max_iterations, request_dx,
+        logger.info("move_cursor_to_target: attempt %d/%d, requested (%d, %d), actual "
+                    "movement (%d, %d), now at (%d, %d)", attempt, max_iterations, request_dx,
                     request_dy, actual_dx, actual_dy, new_x, new_y)
 
         gain_x = _update_gain(gain_x, request_dx, actual_dx)
@@ -673,17 +676,54 @@ def click_at_target(
         # iteration - a move can land exactly on target on the very last
         # allowed attempt, with no further iteration left to notice it.
         if abs(target_x - cur_x) <= tolerance_px and abs(target_y - cur_y) <= tolerance_px:
-            logger.info("click_at_target: converged after %d move(s), at (%d, %d)",
+            logger.info("move_cursor_to_target: converged after %d move(s), at (%d, %d)",
                         attempt, cur_x, cur_y)
-            sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=mouse_button))
-            return
+            return cur_x, cur_y
 
     dx = target_x - cur_x
     dy = target_y - cur_y
-    logger.error("click_at_target: failed to converge after %d attempts, final position "
-                 "(%d, %d), remaining delta (%d, %d) - not clicking", max_iterations,
+    logger.error("move_cursor_to_target: failed to converge after %d attempts, final "
+                 "position (%d, %d), remaining delta (%d, %d)", max_iterations,
                  cur_x, cur_y, dx, dy)
     raise CursorConvergenceError(
         f"cursor did not converge on target ({target_x}, {target_y}) after "
         f"{max_iterations} attempts; landed at ({cur_x}, {cur_y}), remaining delta ({dx}, {dy})"
     )
+
+
+def click_at_target(
+    hwnd,
+    click_rect: tuple[int, int, int, int],
+    sink: CommandSink,
+    mouse_button: int = wire.MOUSE_BUTTON_LEFT,
+    get_cursor_pos=get_cursor_pos,
+    get_window_screen_origin=get_window_screen_origin,
+    sleep=time.sleep,
+    now=time.monotonic,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    tolerance_px: int = DEFAULT_TOLERANCE_PX,
+    settle_poll_interval_seconds: float = DEFAULT_SETTLE_POLL_INTERVAL_SECONDS,
+    settle_stable_reads: int = DEFAULT_SETTLE_STABLE_READS,
+    settle_max_wait_seconds: float = DEFAULT_SETTLE_MAX_WAIT_SECONDS,
+    max_step_px: int = DEFAULT_MAX_STEP_PX,
+    initial_probe_max_px: int = DEFAULT_INITIAL_PROBE_MAX_PX,
+    get_monitor_rects=list_monitor_rects,
+    crossing_step_px: int = DEFAULT_CROSSING_STEP_PX,
+    max_crossing_attempts: int = DEFAULT_MAX_CROSSING_ATTEMPTS,
+    safe_margin_px: int = DEFAULT_SAFE_MARGIN_PX,
+    stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
+    crossing_mode: str = CROSSING_MODE_REACTIVE,
+    gain_estimate: GainEstimate | None = None,
+) -> None:
+    """Moves the cursor to click_rect's center (see move_cursor_to_target
+    for the full mechanism) then clicks. Raises CursorConvergenceError
+    instead of clicking if it doesn't converge within max_iterations - a
+    misclick is worse than aborting the macro."""
+    move_cursor_to_target(
+        hwnd, click_rect, sink, get_cursor_pos, get_window_screen_origin, sleep, now,
+        max_iterations, tolerance_px, settle_poll_interval_seconds, settle_stable_reads,
+        settle_max_wait_seconds, max_step_px, initial_probe_max_px, get_monitor_rects,
+        crossing_step_px, max_crossing_attempts, safe_margin_px, stuck_confirmation_count,
+        crossing_mode, gain_estimate,
+    )
+    sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=mouse_button))

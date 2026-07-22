@@ -8,13 +8,15 @@ REFERENCE_IMAGE_PROPERTIES = ('reference_path', 'reference_full_path')
 def load_profile_into_graph(profile_manager, graph_widget, profile_name):
     data = profile_manager.load(profile_name)
     graph_widget.load_session(data.get('session') or {})
-    return data.get('target_window_title', ''), data.get('focus_policy', 'pause_until_focused')
+    return (data.get('target_window_title', ''), data.get('focus_policy', 'pause_until_focused'),
+            data.get('confirmation_mode', False))
 
 
 def save_graph_to_profile(profile_manager, graph_widget, profile_name, target_window_title='',
-                          focus_policy='pause_until_focused'):
+                          focus_policy='pause_until_focused', confirmation_mode=False):
     session_data = graph_widget.serialize()
-    profile_manager.save(profile_name, session_data, target_window_title, focus_policy)
+    profile_manager.save(profile_name, session_data, target_window_title, focus_policy,
+                         confirmation_mode)
     graph_widget.mark_saved()
     _delete_unreferenced_images(profile_manager, graph_widget, profile_name)
 

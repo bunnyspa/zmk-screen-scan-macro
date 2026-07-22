@@ -1,11 +1,12 @@
 """Owns the single open Raw HID connection shared by the whole app.
 
-Reads (&ssm_tog trigger detection) run on a background thread; writes
-(action commands from the engine) happen synchronously from whatever
-thread calls .write() - MacroRunner's own background thread, via
-engine.command.HidCommandSink. Both share one open device handle - the app
-is one process, so there's no need for the multiple-processes-open-the-
-same-path pattern the standalone Phase 0/1 scripts used.
+Reads (trigger detection: &ssm_tog, &ssm_confirm) run on a background
+thread; writes (action commands from the engine) happen synchronously
+from whatever thread calls .write() - MacroRunner's own background
+thread, via engine.command.HidCommandSink. Both share one open device
+handle - the app is one process, so there's no need for the
+multiple-processes-open-the-same-path pattern the standalone Phase 0/1
+scripts used.
 """
 from __future__ import annotations
 
@@ -18,7 +19,10 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 _USAGE_PAGE = 0xFF60
 _USAGE_ID = 0x61
-_TOG_MARKER = 0x4E
+_TRIGGER_MARKER = 0x4E
+_TRIGGER_VERSION = 0x01
+_TRIGGER_TYPE_TOG = 0x00
+_TRIGGER_TYPE_CONFIRM = 0x01
 
 
 def _load_hid():
@@ -43,13 +47,16 @@ def find_device():
 
 
 class HidLink(QObject):
-    """toggle_received fires whenever a &ssm_tog packet (marker 0x4E)
-    arrives, marshalled onto the GUI thread automatically by Qt's queued
-    connection (the read loop runs on a plain Python thread, not a QThread,
-    but that's fine - Qt only cares about the receiving QObject's thread
-    affinity, not the emitting thread)."""
+    """toggle_received fires for a &ssm_tog trigger, confirm_received for
+    a &ssm_confirm trigger - both ride the same marker (0x4E), byte 2
+    discriminates which. Both signals are marshalled onto the GUI thread
+    automatically by Qt's queued connection (the read loop runs on a
+    plain Python thread, not a QThread, but that's fine - Qt only cares
+    about the receiving QObject's thread affinity, not the emitting
+    thread)."""
 
     toggle_received = pyqtSignal()
+    confirm_received = pyqtSignal()
     connection_lost = pyqtSignal()
 
     def __init__(self, dev, parent=None):
@@ -78,5 +85,12 @@ class HidLink(QObject):
                 return
             if not data:
                 continue
-            if data[0] == _TOG_MARKER:
+            if data[0] != _TRIGGER_MARKER:
+                continue
+            if data[1] != _TRIGGER_VERSION:
+                continue  # unrecognized version - don't attempt to interpret it
+            trigger_type = data[2]
+            if trigger_type == _TRIGGER_TYPE_TOG:
                 self.toggle_received.emit()
+            elif trigger_type == _TRIGGER_TYPE_CONFIRM:
+                self.confirm_received.emit()
