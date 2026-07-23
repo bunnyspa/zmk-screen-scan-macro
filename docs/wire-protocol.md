@@ -10,7 +10,9 @@ byte — not a single bidirectional protocol:
 
 ## Host -> keyboard (action command)
 
-Marker `0x4D`.
+Marker `0x4D` by default - configurable via `CONFIG_ZMK_SCREEN_SCAN_MACRO_CMD_MARKER`
+(firmware side only; changing it means updating `protocol.py`'s marker
+constant to match by hand).
 
 | Bytes | Field | Notes |
 |---|---|---|
@@ -40,7 +42,9 @@ Action types (byte 2):
 
 ## Keyboard -> host (trigger channel)
 
-Marker `0x4E`. Stateless - firmware doesn't track any state at
+Marker `0x4E` by default - configurable via `CONFIG_ZMK_SCREEN_SCAN_MACRO_TRIGGER_MARKER`
+(firmware side only; changing it means updating `hid_link.py`'s marker
+constant to match by hand). Stateless - firmware doesn't track any state at
 all, it just fires this on every press of a trigger key, with byte 2
 identifying which one. The host owns all the actual state (running/stopped,
 pending-confirmation), flipping/resolving it once per event received. This

@@ -11,3 +11,26 @@ config ZMK_SCREEN_SCAN_MACRO
       Requires a zmk,behavior-ssm-tog devicetree node (see docs/wire-protocol.md).
       Pair with the zmk-screen-scan-macro host application running on the
       connected PC. Central half only, same as other Raw HID consumers.
+
+if ZMK_SCREEN_SCAN_MACRO
+
+config ZMK_SCREEN_SCAN_MACRO_CMD_MARKER
+    hex "Raw HID marker byte, host -> keyboard action-command channel"
+    default 0x4D
+    help
+      Change only to resolve a collision with another Raw HID listener
+      sharing this transport (see docs/modules/README.md's marker-byte
+      registry in zmk-config). The host side (protocol.py's marker
+      constant) must be updated to match by hand - it is not derived from
+      this Kconfig automatically.
+
+config ZMK_SCREEN_SCAN_MACRO_TRIGGER_MARKER
+    hex "Raw HID marker byte, keyboard -> host trigger channel"
+    default 0x4E
+    help
+      Change only to resolve a collision with another Raw HID listener
+      sharing this transport. The host side (hid_link.py's marker
+      constant) must be updated to match by hand - it is not derived from
+      this Kconfig automatically.
+
+endif # ZMK_SCREEN_SCAN_MACRO

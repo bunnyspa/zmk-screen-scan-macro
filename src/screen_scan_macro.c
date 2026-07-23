@@ -18,9 +18,10 @@ LOG_MODULE_REGISTER(screen_scan_macro, CONFIG_ZMK_LOG_LEVEL);
 #error "Add a zmk,behavior-ssm-tog node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
 #endif
 
-/* ---- Host -> keyboard: action command listener (marker 0x4D) ---- */
+/* ---- Host -> keyboard: action command listener
+ * (marker CONFIG_ZMK_SCREEN_SCAN_MACRO_CMD_MARKER, default 0x4D) ---- */
 
-#define SSM_CMD_MARKER 0x4D /* 'M' - Macro command */
+#define SSM_CMD_MARKER CONFIG_ZMK_SCREEN_SCAN_MACRO_CMD_MARKER
 #define SSM_CMD_VERSION 0x01
 #define SSM_NUM_KEYCODE_SLOTS 6
 
@@ -168,7 +169,8 @@ static int screen_scan_macro_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(screen_scan_macro, screen_scan_macro_listener);
 ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
 
-/* ---- Keyboard -> host: trigger channel (marker 0x4E) ----
+/* ---- Keyboard -> host: trigger channel
+ * (marker CONFIG_ZMK_SCREEN_SCAN_MACRO_TRIGGER_MARKER, default 0x4E) ----
  * Stateless on purpose: firmware doesn't track any state at all, it just
  * notifies the host that a physical trigger key was pressed, and which
  * one (byte 2 - a trigger-type discriminator so every keyboard->host
@@ -178,7 +180,7 @@ ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
  * could ever drift out of sync (e.g. after a firmware reboot or
  * reconnect). */
 
-#define SSM_TRIGGER_MARKER 0x4E /* 'N' - Notify */
+#define SSM_TRIGGER_MARKER CONFIG_ZMK_SCREEN_SCAN_MACRO_TRIGGER_MARKER
 #define SSM_TRIGGER_VERSION 0x01
 #define SSM_TRIGGER_PACKET_SIZE 32
 
