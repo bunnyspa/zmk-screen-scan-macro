@@ -2,3 +2,8 @@ host/hidapi.dll
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# User-local runtime data - profile.json + reference images created
+# wherever the app is run from (see PROFILES_ROOT in host/app/main_window.py),
+# not source.
+profiles/
