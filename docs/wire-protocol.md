@@ -1,17 +1,16 @@
 # Wire protocol
 
-Extends this ecosystem's existing 32-byte Raw HID packet convention (see
-`zmk-korean-ime-layer`): marker byte identifies which listener a packet is for,
-rest is listener-specific payload, zero-padded to 32 bytes. Report ID `0x00` is
-prepended by the host on Windows (hidapi requirement), not part of the 32-byte
-payload itself.
+Extends this ecosystem's existing 32-byte Raw HID packet convention: marker
+byte identifies which listener a packet is for, rest is listener-specific
+payload, zero-padded to 32 bytes. Report ID `0x00` is prepended by the host on
+Windows (hidapi requirement), not part of the 32-byte payload itself.
 
 Two independent one-way channels share the transport, distinguished by marker
 byte — not a single bidirectional protocol:
 
 ## Host -> keyboard (action command)
 
-Marker `0x4D` ('M' - Macro command).
+Marker `0x4D`.
 
 | Bytes | Field | Notes |
 |---|---|---|
@@ -41,7 +40,7 @@ Action types (byte 2):
 
 ## Keyboard -> host (trigger channel)
 
-Marker `0x4E` ('N' - Notify). Stateless - firmware doesn't track any state at
+Marker `0x4E`. Stateless - firmware doesn't track any state at
 all, it just fires this on every press of a trigger key, with byte 2
 identifying which one. The host owns all the actual state (running/stopped,
 pending-confirmation), flipping/resolving it once per event received. This

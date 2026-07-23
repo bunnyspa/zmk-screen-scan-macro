@@ -85,6 +85,5 @@ acknowledged gap, not an oversight.
 
 ## Marker bytes
 
-`0x4D` (host→keyboard command), `0x4E` (keyboard→host `&ssm_tog` trigger) —
-both distinct from `zmk-korean-ime-layer`'s `0xD5`. The retired Phase-0 spike
-used `0xA0`; not in use anymore.
+`0x4D` (host→keyboard command), `0x4E` (keyboard→host trigger channel). The
+retired Phase-0 spike used `0xA0`; not in use anymore.
