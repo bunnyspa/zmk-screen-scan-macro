@@ -64,14 +64,22 @@ class DecisionNode(MacroBaseNode):
         self.create_property('region_h', '0')
         self._add_browse_button()
         self.add_pick_button('show_decision_region', 'Show Region in Window', 'show_region')
-        self.add_text_input('match_threshold', 'Match Threshold', text='0.85')
+        self.add_spinbox(
+            'match_threshold', 'Match Threshold',
+            value=0.85, min_value=0.0, max_value=1.0, double=True,
+        )
 
         self.add_combo_menu(
             'evaluation_mode', 'Evaluation Mode',
             items=[EVAL_MODE_BRANCH, EVAL_MODE_WAIT],
         )
+        self.add_spinbox(
+            'poll_interval_ms', 'Poll Interval (ms)',
+            value=200, min_value=10, max_value=60000,
+        )
 
         self._update_false_port_visibility(self.get_property('evaluation_mode'))
+        self._update_poll_interval_visibility(self.get_property('evaluation_mode'))
 
     def _add_browse_button(self):
         widget = NodeButton(self.view, 'browse_reference', '', 'Browse Reference Image...')
@@ -169,7 +177,14 @@ class DecisionNode(MacroBaseNode):
             false_port.clear_connections(push_undo=False)
         false_port.set_visible(evaluation_mode != EVAL_MODE_WAIT, push_undo=False)
 
+    def _update_poll_interval_visibility(self, evaluation_mode):
+        """poll_interval_ms only means anything in Wait Until True mode -
+        Branch mode evaluates once and never polls."""
+        self.set_field_visible('poll_interval_ms', evaluation_mode == EVAL_MODE_WAIT)
+        self.redraw()
+
     def set_property(self, name, value, push_undo=True):
         super(DecisionNode, self).set_property(name, value, push_undo=push_undo)
         if name == 'evaluation_mode':
             self._update_false_port_visibility(value)
+            self._update_poll_interval_visibility(value)

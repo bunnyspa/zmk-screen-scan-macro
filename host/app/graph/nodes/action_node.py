@@ -31,10 +31,10 @@ class ActionNode(MacroBaseNode):
             'action_type', 'Action Type',
             items=[ACTION_CLICK, ACTION_KEY_PRESS],
         )
-        self.add_text_input('click_x', 'X (window-relative)', text='0')
-        self.add_text_input('click_y', 'Y (window-relative)', text='0')
-        self.add_text_input('click_w', 'Width', text='1')
-        self.add_text_input('click_h', 'Height', text='1')
+        self.add_spinbox('click_x', 'X (window-relative)', value=0, min_value=0, max_value=100000)
+        self.add_spinbox('click_y', 'Y (window-relative)', value=0, min_value=0, max_value=100000)
+        self.add_spinbox('click_w', 'Width', value=1, min_value=1, max_value=100000)
+        self.add_spinbox('click_h', 'Height', value=1, min_value=1, max_value=100000)
         self.add_pick_button('pick_click_region', 'Pick Click Region', 'click_region')
         self.add_pick_button('show_click_region', 'Show Region in Window', 'show_region')
         self.add_combo_menu(

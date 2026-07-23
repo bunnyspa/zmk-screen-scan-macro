@@ -72,6 +72,41 @@ class NodeKeySequenceEdit(NodeBaseWidget):
             self.on_value_changed()
 
 
+class NodeNumberSpinBox(NodeBaseWidget):
+    """QSpinBox/QDoubleSpinBox - enforces a numeric value and range at the
+    widget level (unlike a text field, which only rejects a bad value once
+    the engine tries to parse it). Unlike NodeGraphQt's own NodeSpinBox,
+    get_value()/set_value() work with real int/float rather than str, and
+    set_value() tolerates a string - a profile saved before this field was
+    a spinbox stored it as text (e.g. '150')."""
+
+    def __init__(self, parent=None, name='', label='', value=0, min_value=0,
+                 max_value=100, double=False):
+        super(NodeNumberSpinBox, self).__init__(parent, name, label)
+        self._double = double
+        spin_box = QtWidgets.QDoubleSpinBox() if double else QtWidgets.QSpinBox()
+        spin_box.setRange(min_value, max_value)
+        spin_box.setValue(value)
+        spin_box.setAlignment(QtCore.Qt.AlignCenter)
+        spin_box.editingFinished.connect(self.on_value_changed)
+        self.set_custom_widget(spin_box)
+
+    @property
+    def type_(self):
+        return 'NumberSpinBoxNodeWidget'
+
+    def get_value(self):
+        return self.get_custom_widget().value()
+
+    def set_value(self, value):
+        if value in (None, ''):
+            return
+        coerced = float(value) if self._double else int(float(value))
+        if coerced != self.get_value():
+            self.get_custom_widget().setValue(coerced)
+            self.on_value_changed()
+
+
 class NodeImageThumbnail(NodeBaseWidget):
     """Read-only preview of a reference image, embedded in a node. Shows the
     processed (cropped-to-content, mask-as-alpha) reference image that's

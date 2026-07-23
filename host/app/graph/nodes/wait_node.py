@@ -11,4 +11,4 @@ class WaitNode(MacroBaseNode):
         super(WaitNode, self).__init__()
         self.add_input('in', multi_input=True)
         self.add_output('out')
-        self.add_text_input('duration_ms', 'Duration (ms)', text='1000')
+        self.add_spinbox('duration_ms', 'Duration (ms)', value=1000, min_value=0, max_value=3600000)

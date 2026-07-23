@@ -1,7 +1,7 @@
 from NodeGraphQt import BaseNode
 from NodeGraphQt.widgets.node_widgets import NodeButton
 
-from .widgets import NodeImageThumbnail, NodeKeySequenceEdit
+from .widgets import NodeImageThumbnail, NodeKeySequenceEdit, NodeNumberSpinBox
 
 # NodeLineEdit's default stylesheet uses a near-transparent background
 # (alpha=20), which reads as a plain label rather than an editable field.
@@ -15,6 +15,21 @@ QLineEdit {
     padding: 2px 4px;
 }
 QLineEdit:focus {
+    border: 1px solid rgba(150, 150, 150, 255);
+}
+"""
+
+# NodeSpinBox has the same near-transparent default background as
+# NodeLineEdit - same fix, for QSpinBox/QDoubleSpinBox instead of QLineEdit.
+SPINBOX_STYLE = """
+QSpinBox, QDoubleSpinBox {
+    background-color: rgba(40, 40, 40, 200);
+    border: 1px solid rgba(100, 100, 100, 255);
+    border-radius: 3px;
+    color: rgba(255, 255, 255, 180);
+    padding: 2px 4px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid rgba(150, 150, 150, 255);
 }
 """
@@ -41,6 +56,22 @@ class MacroBaseNode(BaseNode):
             tooltip=tooltip, tab=tab,
         )
         self.get_widget(name).get_custom_widget().setStyleSheet(TEXT_INPUT_STYLE)
+
+    def add_spinbox(self, name, label='', value=0, min_value=0, max_value=100,
+                    tooltip=None, tab=None, double=False):
+        """Real QSpinBox/QDoubleSpinBox (NodeNumberSpinBox, not NodeGraphQt's
+        own NodeSpinBox - see its docstring for why) - enforces a numeric
+        value and range at the widget level rather than relying on the
+        engine to reject a bad string."""
+        if not double:
+            value, min_value, max_value = int(value), int(min_value), int(max_value)
+        self.create_property(name, value=value, widget_tooltip=tooltip, tab=tab)
+        widget = NodeNumberSpinBox(self.view, name, label, value, min_value, max_value, double)
+        widget.setToolTip(tooltip or '')
+        widget.value_changed.connect(lambda k, v: self.set_property(k, v))
+        self.view.add_widget(widget)
+        self.view.draw_node()
+        widget.get_custom_widget().setStyleSheet(SPINBOX_STYLE)
 
     def set_pick_handler(self, handler):
         """handler(node, mode) is called when the user clicks one of this

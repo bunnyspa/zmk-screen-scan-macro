@@ -377,6 +377,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 }
                 if entry['evaluation_mode'] == 'branch':
                     entry['false'] = _first_connected_node_id(node.get_output('false'))
+                else:
+                    entry['poll_interval_ms'] = int(node.get_property('poll_interval_ms'))
                 engine_nodes[node.id] = entry
 
         return {'start_node': start_node.id, 'nodes': engine_nodes}

@@ -71,10 +71,12 @@ class OverlayController:
         self._active_pick_overlay.show()
 
     def _on_picked(self, node, x, y, w, h):
-        node.set_property('click_x', str(x))
-        node.set_property('click_y', str(y))
-        node.set_property('click_w', str(w))
-        node.set_property('click_h', str(h))
+        # click_x/y/w/h are QSpinBox-backed (see ActionNode) - setValue()
+        # requires an actual int, unlike the old QLineEdit-backed fields.
+        node.set_property('click_x', int(x))
+        node.set_property('click_y', int(y))
+        node.set_property('click_w', int(w))
+        node.set_property('click_h', int(h))
         self._clear_pick_overlay()
 
     def _clear_pick_overlay(self):
