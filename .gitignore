@@ -5,5 +5,8 @@ __pycache__/
 
 # User-local runtime data - profile.json + reference images created
 # wherever the app is run from (see PROFILES_ROOT in host/app/main_window.py),
-# not source.
-profiles/
+# not source. Anchored to the repo root (leading slash) - unanchored
+# "profiles/" would also match host/app/profiles/, the actual source
+# package.
+/profiles/
+/samples/
