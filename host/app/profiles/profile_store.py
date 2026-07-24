@@ -15,13 +15,22 @@ def load(profile_dir):
 
 
 def save(profile_dir, profile_name, session_data, target_window_title='',
-         focus_policy='pause_until_focused', confirmation_mode=False):
+         focus_policy='pause_until_focused', confirmation_mode=False,
+         target_executable=''):
     data = {
         'schema_version': SCHEMA_VERSION,
         'profile_name': profile_name,
-        # Per-profile, unlike VisionGraph's single hardcoded TARGET_WINDOW_TITLE -
-        # a graph's click/decision regions are meaningless against a different
-        # window's layout, so the target window travels with the profile.
+        # Primary window-targeting identifier (e.g. 'notepad++.exe') - a
+        # window's title can change freely at any time (an app appending
+        # the open file's name, an unsaved-changes marker, ...), but the
+        # executable backing it doesn't. See engine/window_resolve.py.
+        'target_executable': target_executable,
+        # Only ever a narrowing hint for when target_executable alone is
+        # ambiguous (zero or multiple matching windows open) - never the
+        # primary identifier. Per-profile, unlike VisionGraph's single
+        # hardcoded TARGET_WINDOW_TITLE - a graph's click/decision regions
+        # are meaningless against a different window's layout, so the
+        # target window info travels with the profile.
         'target_window_title': target_window_title,
         # What MacroRunner does when the target window isn't focused right
         # before an action fires - real HID input goes wherever the OS has
@@ -48,6 +57,7 @@ def empty_session_data(profile_name):
     return {
         'schema_version': SCHEMA_VERSION,
         'profile_name': profile_name,
+        'target_executable': '',
         'target_window_title': '',
         'focus_policy': 'pause_until_focused',
         'confirmation_mode': False,

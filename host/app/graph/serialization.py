@@ -9,14 +9,15 @@ def load_profile_into_graph(profile_manager, graph_widget, profile_name):
     data = profile_manager.load(profile_name)
     graph_widget.load_session(data.get('session') or {})
     return (data.get('target_window_title', ''), data.get('focus_policy', 'pause_until_focused'),
-            data.get('confirmation_mode', False))
+            data.get('confirmation_mode', False), data.get('target_executable', ''))
 
 
 def save_graph_to_profile(profile_manager, graph_widget, profile_name, target_window_title='',
-                          focus_policy='pause_until_focused', confirmation_mode=False):
+                          focus_policy='pause_until_focused', confirmation_mode=False,
+                          target_executable=''):
     session_data = graph_widget.serialize()
     profile_manager.save(profile_name, session_data, target_window_title, focus_policy,
-                         confirmation_mode)
+                         confirmation_mode, target_executable)
     graph_widget.mark_saved()
     _delete_unreferenced_images(profile_manager, graph_widget, profile_name)
 

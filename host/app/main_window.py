@@ -15,17 +15,17 @@ from .ui.overlay_controller import OverlayController
 from .ui.overlays import RegionHighlightOverlay
 from .ui.profile_list_panel import ProfileListPanel
 from .hid_link import HidLink, find_device
-from .window_enum import list_visible_windows
+from .window_enum import list_running_executables, list_visible_windows
 
 # engine/ deliberately stays a sibling of app/ under host/, not nested one
 # level deeper - see the design plan for why. Same process either way; this
 # import is what makes it actually one running program, not two.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.command import HidCommandSink  # noqa: E402
-from engine.cursor import find_window  # noqa: E402
 from engine.focus import FOCUS_POLICY_FOCUS_AND_RESUME, FOCUS_POLICY_PAUSE_UNTIL_FOCUSED  # noqa: E402
 from engine.runner import MacroRunner  # noqa: E402
 from engine.window_capture import WindowCapture  # noqa: E402
+from engine.window_resolve import resolve_target_window  # noqa: E402
 
 PROFILES_ROOT = os.path.join(os.getcwd(), 'profiles')
 LAST_PROFILE_SETTINGS_KEY = 'last_profile'
@@ -129,10 +129,34 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(set_start_action)
 
         toolbar.addSeparator()
-        toolbar.addWidget(QtWidgets.QLabel('Target window: '))
+        toolbar.addWidget(QtWidgets.QLabel('Target executable: '))
+        self.target_executable_edit = QtWidgets.QComboBox()
+        self.target_executable_edit.setEditable(True)  # dropdown of running exes, but still typable
+        self.target_executable_edit.setMaximumWidth(180)
+        self.target_executable_edit.setToolTip(
+            'Primary window-targeting identifier (e.g. notepad++.exe) - stable '
+            "across the window's title changing, unlike the title itself."
+        )
+        self.target_executable_edit.activated.connect(self._on_target_executable_edited)
+        self.target_executable_edit.lineEdit().editingFinished.connect(
+            self._on_target_executable_edited,
+        )
+        toolbar.addWidget(self.target_executable_edit)
+
+        refresh_executables_action = QAction('⟳', self)
+        refresh_executables_action.setToolTip('Refresh running-executable list')
+        refresh_executables_action.triggered.connect(self._refresh_executable_list)
+        toolbar.addAction(refresh_executables_action)
+        self._refresh_executable_list()
+
+        toolbar.addWidget(QtWidgets.QLabel('Target window hint: '))
         self.target_window_edit = QtWidgets.QComboBox()
         self.target_window_edit.setEditable(True)  # dropdown of open windows, but still typable
-        self.target_window_edit.setMaximumWidth(260)
+        self.target_window_edit.setMaximumWidth(220)
+        self.target_window_edit.setToolTip(
+            'Only used to narrow down when the target executable alone matches '
+            'zero or multiple windows - never the primary identifier.'
+        )
         self.target_window_edit.activated.connect(self._on_target_window_edited)
         self.target_window_edit.lineEdit().editingFinished.connect(self._on_target_window_edited)
         toolbar.addWidget(self.target_window_edit)
@@ -210,6 +234,29 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_profile is None:
             return None
         return self.profile_manager.images_dir(self.current_profile)
+
+    def _current_target_executable(self):
+        if not hasattr(self, 'target_executable_edit'):
+            return ''
+        return self.target_executable_edit.currentText().strip()
+
+    def _set_target_executable(self, target_executable):
+        self.target_executable_edit.setCurrentText(target_executable)
+
+    def _on_target_executable_edited(self):
+        if self.current_profile is not None:
+            self.graph_widget.mark_dirty()
+
+    def _refresh_executable_list(self):
+        """Repopulates the dropdown with executables currently owning a
+        visible window, without losing whatever's already selected/typed
+        (same rationale as _refresh_window_list)."""
+        current = self.target_executable_edit.currentText()
+        self.target_executable_edit.blockSignals(True)
+        self.target_executable_edit.clear()
+        self.target_executable_edit.addItems(list_running_executables())
+        self.target_executable_edit.setCurrentText(current)
+        self.target_executable_edit.blockSignals(False)
 
     def _current_target_window_title(self):
         if not hasattr(self, 'target_window_edit'):
@@ -383,6 +430,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return {'start_node': start_node.id, 'nodes': engine_nodes}
 
+    def _prompt_window_choice(self, candidates):
+        """Shown whenever resolve_target_window() couldn't resolve the
+        target executable to exactly one window on its own - see its
+        module docstring for why this always prompts rather than
+        silently trusting a narrowed-to-one guess. Returns the chosen
+        hwnd, or None if the user cancelled or there was nothing to
+        choose from."""
+        if not candidates:
+            QtWidgets.QMessageBox.warning(
+                self, 'Run',
+                'No matching windows found - open the target application first.',
+            )
+            return None
+        labels = [f'{c.title}  [{c.executable}]' for c in candidates]
+        label, ok = QtWidgets.QInputDialog.getItem(
+            self, 'Confirm Target Window',
+            "The target executable didn't resolve to exactly one window on "
+            'its own - choose which one to use:',
+            labels, editable=False,
+        )
+        if not ok:
+            return None
+        return candidates[labels.index(label)].hwnd
+
     def _start_macro(self):
         if self.hid_link is None:
             QtWidgets.QMessageBox.warning(self, 'Run', 'No Raw HID device connected.')
@@ -393,12 +464,18 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, 'Run', 'Set a start node first.')
             return
 
-        target_window_title = self._current_target_window_title()
-        hwnd = find_window(target_window_title) if target_window_title else None
+        target_executable = self._current_target_executable()
+        if not target_executable:
+            QtWidgets.QMessageBox.warning(self, 'Run', 'Set a target executable first.')
+            return
+
+        result = resolve_target_window(target_executable, self._current_target_window_title())
+        hwnd = self._prompt_window_choice(result.candidates) if result.needs_confirmation else result.hwnd
         if not hwnd:
-            QtWidgets.QMessageBox.warning(
-                self, 'Run', f"Target window '{target_window_title}' not found.",
-            )
+            if not result.needs_confirmation:
+                QtWidgets.QMessageBox.warning(
+                    self, 'Run', f"No window found for executable '{target_executable}'.",
+                )
             return
 
         profile_dir = (
@@ -406,7 +483,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.current_profile is not None else '.'
         )
 
-        self.capture = WindowCapture(target_window_title)
+        self.capture = WindowCapture(window_hwnd=hwnd)
         self.capture.start()
 
         sink = HidCommandSink(self.hid_link)
@@ -451,10 +528,12 @@ class MainWindow(QtWidgets.QMainWindow):
         return result == QtWidgets.QMessageBox.Discard
 
     def _load_profile(self, name):
-        target_window_title, focus_policy, confirmation_mode = serialization.load_profile_into_graph(
+        (target_window_title, focus_policy, confirmation_mode,
+         target_executable) = serialization.load_profile_into_graph(
             self.profile_manager, self.graph_widget, name,
         )
         self.current_profile = name
+        self._set_target_executable(target_executable)
         self.target_window_edit.setCurrentText(target_window_title)
         self._set_focus_policy(focus_policy)
         self._set_confirmation_mode(confirmation_mode)
@@ -473,7 +552,7 @@ class MainWindow(QtWidgets.QMainWindow):
             serialization.save_graph_to_profile(
                 self.profile_manager, self.graph_widget, self.current_profile,
                 self._current_target_window_title(), self._current_focus_policy(),
-                self._current_confirmation_mode(),
+                self._current_confirmation_mode(), self._current_target_executable(),
             )
         except ProfileError as exc:
             QtWidgets.QMessageBox.warning(self, 'Save Failed', str(exc))
@@ -542,6 +621,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.current_profile == name:
             self.current_profile = None
             self.graph_widget.new_graph()
+            self._set_target_executable('')
             self.target_window_edit.setCurrentText('')
             self._set_focus_policy(FOCUS_POLICY_PAUSE_UNTIL_FOCUSED)
             self._set_confirmation_mode(False)

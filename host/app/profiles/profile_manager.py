@@ -63,11 +63,12 @@ class ProfileManager:
         return profile_store.load(self._dir_for(name))
 
     def save(self, name, session_data, target_window_title='',
-             focus_policy='pause_until_focused', confirmation_mode=False):
+             focus_policy='pause_until_focused', confirmation_mode=False,
+             target_executable=''):
         if not self.exists(name):
             raise ProfileError(f"Profile '{name}' does not exist.")
         profile_store.save(self._dir_for(name), name, session_data, target_window_title,
-                           focus_policy, confirmation_mode)
+                           focus_policy, confirmation_mode, target_executable)
 
     def rename(self, old_name, new_name):
         new_name = _validate_name(new_name)
@@ -81,7 +82,8 @@ class ProfileManager:
         profile_store.save(self._dir_for(new_name), new_name, data.get('session', {}),
                            data.get('target_window_title', ''),
                            data.get('focus_policy', 'pause_until_focused'),
-                           data.get('confirmation_mode', False))
+                           data.get('confirmation_mode', False),
+                           data.get('target_executable', ''))
         return new_name
 
     def delete(self, name):
@@ -101,7 +103,8 @@ class ProfileManager:
         profile_store.save(self._dir_for(new_name), new_name, data.get('session', {}),
                            data.get('target_window_title', ''),
                            data.get('focus_policy', 'pause_until_focused'),
-                           data.get('confirmation_mode', False))
+                           data.get('confirmation_mode', False),
+                           data.get('target_executable', ''))
         return new_name
 
     def images_dir(self, name):

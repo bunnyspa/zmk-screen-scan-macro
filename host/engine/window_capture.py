@@ -14,8 +14,16 @@ class WindowCapture:
     """Runs a WindowsCapture session on a background thread and keeps
     the latest frame available for polling from any other thread."""
 
-    def __init__(self, window_title):
+    def __init__(self, window_title=None, window_hwnd=None):
+        """Prefer window_hwnd when a specific window has already been
+        resolved (e.g. via engine.window_resolve) - window_title alone is
+        a substring match against window_name, so it can't guarantee this
+        capture targets the exact same window as an hwnd-based cursor
+        operation elsewhere, especially if the title drifts mid-run."""
+        if not window_title and window_hwnd is None:
+            raise ValueError('WindowCapture requires window_title or window_hwnd')
         self.window_title = window_title
+        self.window_hwnd = window_hwnd
         self._latest_frame = None
         self._lock = threading.Lock()
         self._thread = None
@@ -42,7 +50,8 @@ class WindowCapture:
         capture = WindowsCapture(
             cursor_capture=False,
             draw_border=False,
-            window_name=self.window_title,
+            window_name=self.window_title if self.window_hwnd is None else None,
+            window_hwnd=self.window_hwnd,
         )
 
         @capture.event
