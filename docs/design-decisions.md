@@ -151,3 +151,41 @@ them as a Qt signal on the GUI thread, wired to the exact same
 track running/stopped at all (see the wire protocol doc) - this app is the
 sole owner of that state, so pressing the physical key and clicking the
 toolbar button are just two paths to the same toggle.
+
+### A Decision node's region_x/y need a different window origin than click_x/y
+
+`get_window_rect()` (`app/ui/overlays.py`) uses `GetWindowRect()` - the
+window's outer frame, including an invisible resize-border margin DWM
+adds around modern-themed windows on Windows 10/11 (confirmed ~7-8px per
+side). `click_x/y` are authored and consumed against this origin
+consistently end to end (`ClickRegionOverlay` picks against it,
+`cursor.py`'s `get_window_screen_origin()` targets against it at runtime),
+so clicks were never affected.
+
+A Decision node's `region_x/y`, however, are measured directly within
+whatever image the user uploaded (e.g. via Windows' Snipping Tool
+window-capture mode) - confirmed against real hardware that this matches
+DWM's extended frame bounds (`DWMWA_EXTENDED_FRAME_BOUNDS`), not
+`GetWindowRect()`'s outer frame. `WindowsCapture` (this app's own live-
+capture library, used for actual runtime matching) was also confirmed to
+produce frames at this same extended-frame-bounds size - so runtime
+matching itself was never wrong, only `overlay_controller.py`'s "Show
+Region" preview for Decision nodes, which used the wrong origin. Fixed by
+adding `get_window_extended_frame_bounds()` (app/ui/overlays.py) /
+`get_window_extended_frame_origin()` (engine/cursor.py) alongside the
+existing `GetWindowRect`-based functions, and switching only the
+Decision-node preview path to the new one.
+
+### Decision-node live overlay: two overlay classes, not one
+
+`StaticReferenceOverlay` (pre-existing - the manual "Show Region" button)
+and `LiveReferenceOverlay` (new - live feedback during Wait Until True
+polling / confirmation mode, see `engine/runner.py`'s `_run_decision()`)
+stayed separate rather than merging into one configurable class. Their
+lifecycles differ enough that merging would mean threading a
+static-snapshot-with-timer mode and a persists-until-explicitly-closed
+mode through the same class: `StaticReferenceOverlay` draws once at 85%
+opacity and auto-closes after `duration_ms`; `LiveReferenceOverlay`
+draws at 50% opacity, is repainted many times via `update_score()` (once
+per poll), never closes itself, and adds a label strip for the live match
+percentage.

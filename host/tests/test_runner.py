@@ -293,12 +293,12 @@ def test_confirmation_mode_key_press_waits_for_confirm_before_sending():
     runner = MacroRunner(
         _KEY_PRESS_GRAPH, FakeCapture([None]), sink, hwnd=None,
         confirmation_mode=True,
-        show_pending_key_press=lambda key_combo: shown.append(key_combo),
+        show_pending_key_press=lambda key_combo, screen_pos: shown.append((key_combo, screen_pos)),
         confirmation_poll_interval_ms=10,
     )
     runner.start()
     time.sleep(0.05)
-    assert shown == ["a"]  # shown the pending key before any command is sent
+    assert shown == [("a", None)]  # shown the pending key (hwnd=None -> no screen_pos)
     assert not sink.sent  # still waiting for confirmation
 
     runner.confirm()
@@ -307,6 +307,26 @@ def test_confirmation_mode_key_press_waits_for_confirm_before_sending():
     runner.join(timeout=2)
 
     assert sink.sent  # proceeded once confirmed
+
+
+def test_confirmation_mode_key_press_computes_screen_pos_from_window_origin(monkeypatch):
+    monkeypatch.setattr(runner_module, "get_window_screen_origin", lambda hwnd: (100, 100))
+
+    shown = []
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        _KEY_PRESS_GRAPH, FakeCapture([None]), sink, hwnd=1234,
+        confirmation_mode=True,
+        show_pending_key_press=lambda key_combo, screen_pos: shown.append((key_combo, screen_pos)),
+        confirmation_poll_interval_ms=10,
+        is_window_focused=lambda hwnd: True,  # hwnd=1234 isn't a real window
+    )
+    runner.start()
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert shown == [("a", (100, 100))]  # the pending-key overlay anchors to the window origin
 
 
 def test_confirmation_mode_click_moves_cursor_and_waits_before_clicking(monkeypatch):
@@ -362,3 +382,143 @@ def test_confirmation_mode_stop_while_waiting_sends_no_action():
     runner.join(timeout=2)
 
     assert not sink.sent
+
+
+def _decision_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
+    content = np.full((10, 10, 3), 100, dtype=np.uint8)
+    reference_bgra = np.dstack([content, np.full((10, 10), 255, dtype=np.uint8)])
+    cv2.imwrite(str(tmp_path / "ref.png"), reference_bgra)
+
+    nonmatching = np.zeros((100, 100, 3), dtype=np.uint8)
+    matching = np.zeros((100, 100, 3), dtype=np.uint8)
+    matching[10:20, 10:20] = content
+
+    graph = {
+        "start_node": "d1",
+        "nodes": {
+            "d1": {
+                "type": "decision",
+                "reference_path": "ref.png",
+                "region": [10, 10, 10, 10],
+                "match_threshold": 0.99,
+                "evaluation_mode": evaluation_mode,
+                "poll_interval_ms": poll_interval_ms,
+                "true": "done",
+                "false": "done",
+            },
+            "done": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "done"},
+        },
+    }
+    return graph, nonmatching, matching
+
+
+def test_wait_until_true_shows_overlay_each_poll_without_blocking(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
+    graph, nonmatching, matching = _decision_graph(tmp_path, "wait_until_true")
+
+    shown = []
+    hidden = []
+    sink = RecordingCommandSink()
+    capture = FakeCapture([nonmatching, nonmatching, matching])
+    runner = MacroRunner(
+        graph, capture, sink, hwnd=1234, profile_dir=tmp_path,
+        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        is_window_focused=lambda hwnd: True,
+    )
+    runner.start()
+    time.sleep(0.2)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert len(shown) >= 2  # updated across multiple polls
+    assert shown[0]["screen_rect"] == (110, 110, 10, 10)  # origin(100,100) + region(10,10,10,10)
+    assert shown[-1]["score"] >= shown[0]["score"]  # eventually converges on the matching frame
+    assert hidden  # cleared once matched
+    assert sink.sent  # proceeded without ever needing confirm()
+
+
+def test_branch_mode_shows_no_overlay_without_confirmation_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
+    graph, nonmatching, _matching = _decision_graph(tmp_path, "branch")
+
+    shown = []
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        graph, FakeCapture([nonmatching]), sink, hwnd=1234, profile_dir=tmp_path,
+        show_decision_overlay=shown.append,
+    )
+    runner.start()
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert not shown  # Branch mode + confirmation_mode off: no overlay at all
+
+
+def test_branch_mode_with_confirmation_mode_shows_overlay_and_waits_for_confirm(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
+    graph, nonmatching, _matching = _decision_graph(tmp_path, "branch")
+
+    shown = []
+    hidden = []
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        graph, FakeCapture([nonmatching]), sink, hwnd=1234, profile_dir=tmp_path,
+        confirmation_mode=True, confirmation_poll_interval_ms=10,
+        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        is_window_focused=lambda hwnd: True,
+    )
+    runner.start()
+    time.sleep(0.05)
+
+    assert shown  # single evaluation already shown
+    assert not sink.sent  # blocked waiting for confirmation
+    assert not hidden
+
+    runner.confirm()  # resolves the decision's own confirmation gate
+    time.sleep(0.05)
+
+    assert hidden  # decision overlay cleared once its confirmation resolved
+    assert not sink.sent  # confirmation_mode also gates the following action
+
+    runner.confirm()  # resolves the subsequent key_press action's gate
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert sink.sent  # proceeded once both gates were confirmed
+
+
+def test_wait_until_true_with_confirmation_mode_waits_for_confirm_after_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
+    graph, nonmatching, matching = _decision_graph(tmp_path, "wait_until_true")
+
+    shown = []
+    hidden = []
+    sink = RecordingCommandSink()
+    capture = FakeCapture([nonmatching, matching, matching, matching])
+    runner = MacroRunner(
+        graph, capture, sink, hwnd=1234, profile_dir=tmp_path,
+        confirmation_mode=True, confirmation_poll_interval_ms=10,
+        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        is_window_focused=lambda hwnd: True,
+    )
+    runner.start()
+    time.sleep(0.1)
+
+    assert shown  # polled and updated at least once
+    assert not sink.sent  # matched, but blocked waiting for confirmation
+    assert not hidden
+
+    runner.confirm()  # resolves the decision's own confirmation gate
+    time.sleep(0.05)
+
+    assert hidden  # decision overlay cleared once its confirmation resolved
+    assert not sink.sent  # confirmation_mode also gates the following action
+
+    runner.confirm()  # resolves the subsequent key_press action's gate
+    time.sleep(0.05)
+    runner.stop()
+    runner.join(timeout=2)
+
+    assert sink.sent  # proceeded once both gates were confirmed

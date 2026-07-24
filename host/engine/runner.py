@@ -50,6 +50,7 @@ from .cursor import (  # noqa: E402
     CROSSING_MODE_REACTIVE,
     GainEstimate,
     click_at_target,
+    get_window_extended_frame_origin,
     get_window_screen_origin,
     move_cursor_to_target,
 )
@@ -61,7 +62,7 @@ from .focus import (  # noqa: E402
     focus_window,
     is_window_focused,
 )
-from .matcher import match  # noqa: E402
+from .matcher import match_score  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ class MacroRunner:
                  is_window_focused=is_window_focused, focus_window=focus_window,
                  confirmation_mode: bool = False,
                  show_pending_click=None, show_pending_key_press=None,
-                 confirmation_poll_interval_ms: int = DEFAULT_CONFIRMATION_POLL_INTERVAL_MS):
+                 confirmation_poll_interval_ms: int = DEFAULT_CONFIRMATION_POLL_INTERVAL_MS,
+                 show_decision_overlay=None, hide_decision_overlay=None):
         self._graph = graph
         self._capture = capture
         self._sink = sink
@@ -113,6 +115,15 @@ class MacroRunner:
         self._show_pending_click = show_pending_click
         self._show_pending_key_press = show_pending_key_press
         self._confirmation_poll_interval_ms = confirmation_poll_interval_ms
+        # Decision-node live overlay (reference image + match percentage) -
+        # shown during Wait Until True polling (regardless of confirmation
+        # mode) and/or right before a decision resolves in confirmation
+        # mode (both modes, per the design discussion this came from) -
+        # see _run_decision(). Injected the same way as
+        # show_pending_click/show_pending_key_press, for the same reason
+        # (UI-thread work).
+        self._show_decision_overlay = show_decision_overlay
+        self._hide_decision_overlay = hide_decision_overlay
         self._confirmation_event = threading.Event()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
@@ -204,7 +215,7 @@ class MacroRunner:
         if kind == "click" and self._show_pending_click is not None:
             self._show_pending_click(details["screen_rect"])
         elif kind == "key_press" and self._show_pending_key_press is not None:
-            self._show_pending_key_press(details["key_combo"])
+            self._show_pending_key_press(details["key_combo"], details.get("screen_pos"))
 
         poll_interval = self._confirmation_poll_interval_ms / 1000.0
         while not self._stop_requested.is_set():
@@ -220,7 +231,13 @@ class MacroRunner:
         if action_type == "key_press":
             keycode = wire.keycode_for_letter(node["key_combo"])
             if self._confirmation_mode:
-                if not self._await_confirmation("key_press", {"key_combo": node["key_combo"]}):
+                # A key press has no on-screen region to anchor a preview to
+                # (unlike a click) - the window's own top-left corner is
+                # used instead, just so the pending-key overlay has
+                # somewhere to float near the target window.
+                screen_pos = get_window_screen_origin(self._hwnd) if self._hwnd is not None else None
+                details = {"key_combo": node["key_combo"], "screen_pos": screen_pos}
+                if not self._await_confirmation("key_press", details):
                     return
             self._sink.send(Command(action=wire.ACTION_KEY_PRESS, keycodes=(keycode,)))
         elif action_type == "click":
@@ -244,24 +261,61 @@ class MacroRunner:
             raise ValueError(f"unknown action_type: {action_type}")
 
     def _run_decision(self, node: dict) -> str:
-        reference_bgra = cv2.imread(str(self._profile_dir / node["reference_path"]),
-                                     cv2.IMREAD_UNCHANGED)
+        reference_path = str(self._profile_dir / node["reference_path"])
+        reference_bgra = cv2.imread(reference_path, cv2.IMREAD_UNCHANGED)
         region = tuple(node["region"])
         threshold = node["match_threshold"]
         mode = node["evaluation_mode"]
 
+        # Live overlay (reference image + match %): shown for every Wait
+        # Until True poll regardless of confirmation mode (there's
+        # something to watch update over time), and for Branch mode only
+        # when confirmation mode is on (a single instantaneous evaluation
+        # has nothing to visualize turn-by-turn otherwise) - see the
+        # design discussion in the commit this came from.
+        show_overlay = mode == "wait_until_true" or self._confirmation_mode
+        screen_rect = None
+        if show_overlay and self._hwnd is not None:
+            origin_x, origin_y = get_window_extended_frame_origin(self._hwnd)
+            rx, ry, rw, rh = region
+            screen_rect = (origin_x + rx, origin_y + ry, rw, rh)
+
+        def update_overlay(score):
+            if screen_rect is not None and self._show_decision_overlay is not None:
+                self._show_decision_overlay({
+                    "screen_rect": screen_rect,
+                    "reference_path": reference_path,
+                    "score": score,
+                    "threshold": threshold,
+                })
+
+        def clear_overlay():
+            if show_overlay and self._hide_decision_overlay is not None:
+                self._hide_decision_overlay()
+
         if mode == "branch":
             frame = self._capture.get_latest_frame_bgr()
-            is_match = frame is not None and match(frame, reference_bgra, region, threshold)
+            score = match_score(frame, reference_bgra, region) if frame is not None else 0.0
+            is_match = score >= threshold
+            update_overlay(score)
+            if self._confirmation_mode:
+                self._await_confirmation("decision", {})
+            clear_overlay()
             return node["true"] if is_match else node["false"]
 
         if mode == "wait_until_true":
             poll_interval = node.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_MS) / 1000.0
             while not self._stop_requested.is_set():
                 frame = self._capture.get_latest_frame_bgr()
-                if frame is not None and match(frame, reference_bgra, region, threshold):
+                score = match_score(frame, reference_bgra, region) if frame is not None else 0.0
+                update_overlay(score)
+                if score >= threshold:
+                    if self._confirmation_mode:
+                        self._await_confirmation("decision", {})
+                    clear_overlay()
                     return node["true"]
                 self._stop_requested.wait(timeout=poll_interval)
+            clear_overlay()
             return node["true"]
 
         raise ValueError(f"unknown evaluation_mode: {mode}")

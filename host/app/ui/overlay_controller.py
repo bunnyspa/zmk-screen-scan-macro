@@ -3,7 +3,7 @@ import os
 from PyQt5 import QtGui, QtWidgets
 
 from .overlays import (
-    ClickRegionOverlay, ReferencePreviewOverlay, RegionHighlightOverlay,
+    ClickRegionOverlay, RegionHighlightOverlay, StaticReferenceOverlay,
     get_window_extended_frame_bounds, get_window_rect,
 )
 
@@ -142,5 +142,5 @@ class OverlayController:
         win_x, win_y, _win_w, _win_h = window_rect
         region_x, region_y, _region_w, _region_h = node.get_region()
         screen_pos = (win_x + region_x, win_y + region_y)
-        self._active_highlight_overlay = ReferencePreviewOverlay(screen_pos, pixmap)
+        self._active_highlight_overlay = StaticReferenceOverlay(screen_pos, pixmap)
         self._active_highlight_overlay.show()

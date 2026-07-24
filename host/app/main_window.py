@@ -12,7 +12,7 @@ from .graph.nodes.decision_node import EVAL_MODE_BRANCH, DecisionNode
 from .graph.nodes.wait_node import WaitNode
 from .profiles.profile_manager import ProfileError, ProfileManager
 from .ui.overlay_controller import OverlayController
-from .ui.overlays import RegionHighlightOverlay
+from .ui.overlays import LiveReferenceOverlay, PendingKeyPressOverlay, RegionHighlightOverlay
 from .ui.profile_list_panel import ProfileListPanel
 from .hid_link import HidLink, find_device
 from .window_enum import list_running_executables, list_visible_windows
@@ -52,7 +52,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # (emitted from its background thread, connected to GUI-thread slots) -
     # same pattern as HidLink's toggle_received/confirm_received.
     _pending_click_signal = QtCore.pyqtSignal(tuple)
-    _pending_key_press_signal = QtCore.pyqtSignal(str)
+    _pending_key_press_signal = QtCore.pyqtSignal(str, object)
+    _decision_overlay_signal = QtCore.pyqtSignal(dict)
+    _decision_overlay_hide_signal = QtCore.pyqtSignal()
 
     def __init__(self):
         super(MainWindow, self).__init__()
@@ -70,6 +72,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.macro_runner = None
         self.capture = None
         self._pending_confirmation_overlay = None
+        self._decision_overlay = None
         self.hid_link = self._connect_hid()
 
         self._build_ui()
@@ -211,6 +214,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._pending_click_signal.connect(self._show_pending_click_on_gui_thread)
         self._pending_key_press_signal.connect(self._show_pending_key_press_on_gui_thread)
+        self._decision_overlay_signal.connect(self._show_decision_overlay_on_gui_thread)
+        self._decision_overlay_hide_signal.connect(self._hide_decision_overlay_on_gui_thread)
 
     # -- node wiring -----------------------------------------------------
 
@@ -310,14 +315,39 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._pending_confirmation_overlay.show()
 
-    def _show_pending_key_press(self, key_combo):
+    def _show_pending_key_press(self, key_combo, screen_pos):
         """MacroRunner callback (confirmation mode) - see
         _show_pending_click's threading note."""
-        self._pending_key_press_signal.emit(key_combo)
+        self._pending_key_press_signal.emit(key_combo, screen_pos)
 
-    def _show_pending_key_press_on_gui_thread(self, key_combo):
+    def _show_pending_key_press_on_gui_thread(self, key_combo, screen_pos):
         self._clear_pending_indicator()
         self.pending_action_label.setText(f'Pending: press "{key_combo}" (confirm to proceed)')
+        if screen_pos is not None:
+            self._pending_confirmation_overlay = PendingKeyPressOverlay(screen_pos, key_combo)
+            self._pending_confirmation_overlay.show()
+
+    def _show_decision_overlay(self, details):
+        """MacroRunner callback (Wait Until True polling and/or
+        confirmation mode - see engine/runner.py's _run_decision()) - see
+        _show_pending_click's threading note."""
+        self._decision_overlay_signal.emit(details)
+
+    def _show_decision_overlay_on_gui_thread(self, details):
+        if self._decision_overlay is None:
+            self._decision_overlay = LiveReferenceOverlay(
+                details['screen_rect'], details['reference_path'],
+            )
+            self._decision_overlay.show()
+        self._decision_overlay.update_score(details['score'], details['threshold'])
+
+    def _hide_decision_overlay(self):
+        self._decision_overlay_hide_signal.emit()
+
+    def _hide_decision_overlay_on_gui_thread(self):
+        if self._decision_overlay is not None:
+            self._decision_overlay.close()
+            self._decision_overlay = None
 
     def _refresh_window_list(self):
         """Repopulates the dropdown with currently visible window titles,
@@ -493,6 +523,8 @@ class MainWindow(QtWidgets.QMainWindow):
             confirmation_mode=self._current_confirmation_mode(),
             show_pending_click=self._show_pending_click,
             show_pending_key_press=self._show_pending_key_press,
+            show_decision_overlay=self._show_decision_overlay,
+            hide_decision_overlay=self._hide_decision_overlay,
         )
         self.macro_runner.start()
         self.run_action.setText('Stop')
@@ -506,6 +538,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.capture = None
         self.run_action.setText('Run')
         self._clear_pending_indicator()
+        self._hide_decision_overlay_on_gui_thread()
 
     # -- profile list handling -------------------------------------------
 

@@ -184,17 +184,47 @@ def get_cursor_pos() -> tuple[int, int]:
 def get_window_screen_origin(hwnd) -> tuple[int, int]:
     """Screen-space coordinates of the window's top-left corner - the
     outer frame (title bar + borders included), via GetWindowRect(). This
-    has to match whatever coordinate system click_rect/region numbers were
-    authored against: the editor's region-pick/highlight overlays
-    (app/ui/overlays.py's get_window_rect()) and WindowCapture (which
-    captures the whole window surface, chrome included, standard
-    Windows Graphics Capture behavior for a capture-by-hwnd) both use this
-    same outer-frame origin. Using ClientToScreen's client-area origin
+    is the convention click_rect is authored and consumed in throughout:
+    the editor's ClickRegionOverlay (app/ui/overlays.py's get_window_rect())
+    positions itself against it, and this function targets against it here
+    - consistent end to end. Using ClientToScreen's client-area origin
     here instead (as this used to) shifts every click down and right by
     the title bar height and border width - confirmed against real
-    hardware as the actual cause of a consistently-offset click."""
+    hardware as the actual cause of a consistently-offset click.
+
+    NOTE: this is NOT the same origin Decision-node region coordinates
+    use - see get_window_extended_frame_origin() below, and
+    docs/design-decisions.md's addendum on the ~7px "Show Region" preview
+    offset this distinction was confirmed by."""
     rect = wintypes.RECT()
     _user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return rect.left, rect.top
+
+
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9
+_dwmapi = ctypes.windll.dwmapi if sys.platform == "win32" else None
+
+
+def get_window_extended_frame_origin(hwnd) -> tuple[int, int]:
+    """Screen-space coordinates of the window's visible top-left corner -
+    DWM's extended frame bounds, which exclude the invisible resize-border
+    margin get_window_screen_origin() includes (confirmed ~7-8px per side
+    on Windows 10/11). This is the convention Decision-node region_x/y are
+    in: process_masked_reference() measures them within whatever image the
+    user uploaded, and WindowsCapture (this app's own live-capture library)
+    was confirmed against real hardware to produce frames sized to this
+    same extended-frame-bounds convention, not get_window_screen_origin()'s
+    outer-frame one.
+
+    Falls back to get_window_screen_origin() if DWM composition is
+    unavailable, rather than raising - a live run's decision-overlay
+    display is a nice-to-have, not worth crashing the match logic over."""
+    rect = wintypes.RECT()
+    hresult = _dwmapi.DwmGetWindowAttribute(
+        hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect),
+    )
+    if hresult != 0:
+        return get_window_screen_origin(hwnd)
     return rect.left, rect.top
 
 
