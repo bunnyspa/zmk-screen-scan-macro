@@ -1,13 +1,25 @@
 """Click-targeting: moves the real cursor toward a window-relative click
 rect, then clicks.
 
-click_rect/region coordinates are relative to the window's outer frame
-(GetWindowRect() - title bar and borders included), matching how the
-editor's overlays (app/ui/overlays.py's get_window_rect()) and
-WindowCapture (captures the whole window surface, chrome included) both
-already treat them - see get_window_screen_origin(). Using the client-area
+click_rect (Action nodes) is relative to the window's outer frame
+(GetWindowRect() - title bar and borders included), matching how
+click_rect is authored (app/ui/overlays.py's ClickRegionOverlay, positioned
+via get_window_rect()) and consumed here (get_window_screen_origin()) -
+consistent end to end, so clicks land correctly. Using the client-area
 origin here instead was a real, confirmed bug: every click landed shifted
 down and right by the title bar height and border width.
+
+NOTE: Decision-node region coordinates are NOT in this same convention -
+confirmed against real hardware that WindowsCapture (engine/window_capture.py)
+produces frames sized to DWM's extended frame bounds (DWMWA_EXTENDED_FRAME_BOUNDS),
+which is smaller than GetWindowRect() by an invisible resize-border margin
+(~7-8px per side on Windows 10/11). A Decision node's region_x/y/w/h are
+measured directly within the reference image the user uploaded, so they
+already match WindowsCapture's convention - engine/matcher.py's per-frame
+cropping is correct without any adjustment. Only app/ui/overlay_controller.py's
+"Show Region" preview for Decision nodes needed to switch to
+get_window_extended_frame_bounds() instead of get_window_rect() - see its
+own comment for the bug this fixed.
 
 Real HID mice only report relative motion - there's no "move to absolute
 pixel" over Raw HID. A single computed delta isn't enough on its own,

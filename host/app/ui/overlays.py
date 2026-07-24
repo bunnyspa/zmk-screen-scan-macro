@@ -4,14 +4,51 @@ import ctypes.wintypes
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
 def get_window_rect(title):
-    """Screen-coordinate (x, y, width, height) of the named window, or
-    None if no such window is currently open."""
+    """Screen-coordinate (x, y, width, height) of the named window's outer
+    frame, or None if no such window is currently open. Includes an
+    invisible resize-border margin DWM adds around modern-themed windows
+    on Windows 10/11 (confirmed ~7-8px per side on this machine) - this is
+    the convention click_x/y/w/h are authored and consumed in throughout
+    (ClickRegionOverlay picks against it, cursor.py's
+    get_window_screen_origin() targets against it), so don't switch this
+    one to extended frame bounds without also updating cursor.py - see
+    get_window_extended_frame_bounds() for the other convention."""
     hwnd = ctypes.windll.user32.FindWindowW(None, title)
     if not hwnd:
         return None
     rect = ctypes.wintypes.RECT()
     if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+
+
+def get_window_extended_frame_bounds(title):
+    """Screen-coordinate (x, y, width, height) of the named window's
+    visible bounds (DWMWA_EXTENDED_FRAME_BOUNDS - excludes the invisible
+    resize-border margin get_window_rect() includes), or None if no such
+    window is currently open or DWM composition is unavailable.
+
+    This is the convention a Decision node's region_x/y/w/h are in -
+    process_masked_reference() measures them within whatever image the
+    user uploaded, and confirmed directly against real hardware:
+    WindowsCapture (this app's own live-capture library, used for actual
+    runtime matching) produces frames at exactly this size, not
+    get_window_rect()'s outer-frame size. A screenshot tool's "capture
+    this window" mode (e.g. Windows' Snipping Tool) also captures at this
+    size, matching what a human visually sees as "the window" - not
+    get_window_rect()'s invisible padding."""
+    hwnd = ctypes.windll.user32.FindWindowW(None, title)
+    if not hwnd:
+        return None
+    rect = ctypes.wintypes.RECT()
+    hresult = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+        hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect),
+    )
+    if hresult != 0:
         return None
     return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
 

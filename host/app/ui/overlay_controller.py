@@ -2,7 +2,10 @@ import os
 
 from PyQt5 import QtGui, QtWidgets
 
-from .overlays import ClickRegionOverlay, ReferencePreviewOverlay, RegionHighlightOverlay, get_window_rect
+from .overlays import (
+    ClickRegionOverlay, ReferencePreviewOverlay, RegionHighlightOverlay,
+    get_window_extended_frame_bounds, get_window_rect,
+)
 
 
 class OverlayController:
@@ -100,8 +103,28 @@ class OverlayController:
         self._active_highlight_overlay.show()
 
     def _show_reference_preview(self, node):
-        window_rect = self._get_window_rect_or_warn()
+        window_title = self._window_title_resolver()
+        if not window_title:
+            QtWidgets.QMessageBox.warning(
+                None, 'No Target Window',
+                'Set a target window title for this profile first.',
+            )
+            return
+
+        # Unlike click_x/y (authored/consumed via get_window_rect()'s outer
+        # frame throughout, see cursor.py), a Decision node's region_x/y is
+        # measured within whatever image the user uploaded - confirmed
+        # against real hardware to match DWM's extended frame bounds, not
+        # get_window_rect()'s invisible-border-inclusive size. Using
+        # get_window_rect() here was the actual bug behind a "Show Region"
+        # preview looking shifted by ~7px.
+        window_rect = get_window_extended_frame_bounds(window_title)
         if window_rect is None:
+            QtWidgets.QMessageBox.warning(
+                None, 'Target Window Not Found',
+                f"Could not find a window titled '{window_title}'. "
+                'Make sure the target window is running and visible.',
+            )
             return
 
         abs_path = node.get_reference_abs_path()
