@@ -72,6 +72,22 @@ def test_cyclic_action_wait_graph_runs_multiple_iterations():
     assert sink.sent[0].keycodes == (wire.keycode_for_letter("a"),)
 
 
+def test_action_with_no_out_ends_run_instead_of_erroring():
+    sink = RecordingCommandSink()
+    graph = {
+        "start_node": "a1",
+        "nodes": {
+            "a1": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": None},
+        },
+    }
+    runner = MacroRunner(graph, FakeCapture([None]), sink)
+    runner.start()
+    runner.join(timeout=2)  # dead end - thread should exit on its own, no stop() needed
+
+    assert not runner._thread.is_alive()
+    assert len(sink.sent) == 1  # ran once, then stopped at the dangling "out"
+
+
 def test_decision_branch_true_and_false(tmp_path):
     content = np.full((10, 10, 3), (10, 20, 30), dtype=np.uint8)
     reference_bgra = np.dstack([content, np.full((10, 10), 255, dtype=np.uint8)])

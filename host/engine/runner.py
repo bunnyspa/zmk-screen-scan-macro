@@ -11,11 +11,15 @@ tests/fixtures/example_graph.json for a worked example.
     "<node id>": {
       "type": "action" | "wait" | "decision",
       ... type-specific fields below ...
-      "out": "<node id>"                # action, wait
-      "true": "<node id>", "false": "<node id>"   # decision
+      "out": "<node id>" | null         # action, wait
+      "true": "<node id>" | null, "false": "<node id>" | null   # decision
     }, ...
   }
 }
+
+An "out"/"true"/"false" of null (an unconnected port, per
+main_window.py's _first_connected_node_id) is a dead end: the run just
+ends there rather than erroring.
 
 action:   action_type: "key_press" | "click"
           key_combo: str (single a-z letter, key_press)
@@ -151,6 +155,12 @@ class MacroRunner:
     def _run(self) -> None:
         node_id = self._graph["start_node"]
         while not self._stop_requested.is_set():
+            if node_id is None:
+                # An out/true/false port with nothing wired to it translates
+                # to None (see main_window.py's _first_connected_node_id) -
+                # that's a dead end by design, not an error, so the run just
+                # ends here rather than KeyError-ing on nodes[None].
+                return
             node = self._graph["nodes"][node_id]
             node_type = node["type"]
 
