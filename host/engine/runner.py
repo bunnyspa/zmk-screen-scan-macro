@@ -26,11 +26,15 @@ action:   action_type: "key_press" | "click"
           click_rect: [x, y, w, h] (window-relative, click)
           mouse_button: "left" | "right" | "middle" (click, default "left")
 wait:     duration_ms: int
-decision: reference_path: str (relative to profile_dir, cropped alpha-masked BGRA PNG)
-          region: [x, y, w, h] (window-relative)
-          match_threshold: float
+decision: images: [{reference_path: str (relative to profile_dir, cropped
+                     alpha-masked BGRA PNG), region: [x, y, w, h]
+                     (window-relative), out: "<node id>" | null}, ...]
+                    - an OR match: checked in list order, first one that
+                      meets match_threshold wins and its own "out" is taken.
+          match_threshold: float (shared across every image in the list)
           evaluation_mode: "branch" | "wait_until_true"
           poll_interval_ms: int (wait_until_true only, default 200)
+          "false": "<node id>" | null (branch only - taken if no image matched)
 
 Cyclic graphs are intentional (retry-until-true idiom) - the runner does not
 detect or refuse cycles. Call .stop() to end a run; without it, a cyclic
@@ -270,10 +274,17 @@ class MacroRunner:
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
-    def _run_decision(self, node: dict) -> str:
-        reference_path = str(self._profile_dir / node["reference_path"])
-        reference_bgra = cv2.imread(reference_path, cv2.IMREAD_UNCHANGED)
-        region = tuple(node["region"])
+    def _run_decision(self, node: dict) -> str | None:
+        # Loaded once per node visit (not cached across polls within one
+        # wait_until_true call, same as the old single-image behavior) -
+        # each entry's own reference_bgra travels alongside it so
+        # _evaluate_images doesn't need to re-open files per poll.
+        images = [
+            {**img, "reference_bgra": cv2.imread(
+                str(self._profile_dir / img["reference_path"]), cv2.IMREAD_UNCHANGED,
+            )}
+            for img in node["images"]
+        ]
         threshold = node["match_threshold"]
         mode = node["evaluation_mode"]
 
@@ -282,22 +293,48 @@ class MacroRunner:
         # something to watch update over time), and for Branch mode only
         # when confirmation mode is on (a single instantaneous evaluation
         # has nothing to visualize turn-by-turn otherwise) - see the
-        # design discussion in the commit this came from.
+        # design discussion in the commit this came from. With multiple
+        # images, whichever one is currently the best-scoring candidate is
+        # shown (the eventual match isn't known until it crosses
+        # threshold) - the caller (main_window.py's
+        # _show_decision_overlay_on_gui_thread) recreates the overlay
+        # whenever the shown region/reference changes between polls.
         show_overlay = mode == "wait_until_true" or self._confirmation_mode
-        screen_rect = None
+        origin = None
         if show_overlay and self._hwnd is not None:
-            origin_x, origin_y = get_window_extended_frame_origin(self._hwnd)
-            rx, ry, rw, rh = region
-            screen_rect = (origin_x + rx, origin_y + ry, rw, rh)
+            origin = get_window_extended_frame_origin(self._hwnd)
 
-        def update_overlay(score):
-            if screen_rect is not None and self._show_decision_overlay is not None:
-                self._show_decision_overlay({
-                    "screen_rect": screen_rect,
-                    "reference_path": reference_path,
-                    "score": score,
-                    "threshold": threshold,
-                })
+        def evaluate(frame):
+            """Scores every image in priority order. Returns (matched_img,
+            display_img, display_score) - matched_img is the first (lowest
+            priority index) image meeting threshold, or None if none did;
+            display_img/score is the matched image if there is one,
+            otherwise whichever image scored highest (most useful thing to
+            show while still polling toward a match)."""
+            matched_img, matched_score = None, None
+            best_img, best_score = None, -1.0
+            for img in images:
+                score = match_score(frame, img["reference_bgra"], tuple(img["region"])) \
+                    if frame is not None else 0.0
+                if score > best_score:
+                    best_img, best_score = img, score
+                if matched_img is None and score >= threshold:
+                    matched_img, matched_score = img, score
+            if matched_img is not None:
+                return matched_img, matched_img, matched_score
+            return None, best_img, best_score
+
+        def update_overlay(display_img, score):
+            if display_img is None or origin is None or self._show_decision_overlay is None:
+                return
+            origin_x, origin_y = origin
+            rx, ry, rw, rh = display_img["region"]
+            self._show_decision_overlay({
+                "screen_rect": (origin_x + rx, origin_y + ry, rw, rh),
+                "reference_path": str(self._profile_dir / display_img["reference_path"]),
+                "score": score,
+                "threshold": threshold,
+            })
 
         def clear_overlay():
             if show_overlay and self._hide_decision_overlay is not None:
@@ -305,27 +342,26 @@ class MacroRunner:
 
         if mode == "branch":
             frame = self._capture.get_latest_frame_bgr()
-            score = match_score(frame, reference_bgra, region) if frame is not None else 0.0
-            is_match = score >= threshold
-            update_overlay(score)
+            matched_img, display_img, score = evaluate(frame)
+            update_overlay(display_img, score)
             if self._confirmation_mode:
                 self._await_confirmation("decision", {})
             clear_overlay()
-            return node["true"] if is_match else node["false"]
+            return matched_img["out"] if matched_img is not None else node["false"]
 
         if mode == "wait_until_true":
             poll_interval = node.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_MS) / 1000.0
             while not self._stop_requested.is_set():
                 frame = self._capture.get_latest_frame_bgr()
-                score = match_score(frame, reference_bgra, region) if frame is not None else 0.0
-                update_overlay(score)
-                if score >= threshold:
+                matched_img, display_img, score = evaluate(frame)
+                update_overlay(display_img, score)
+                if matched_img is not None:
                     if self._confirmation_mode:
                         self._await_confirmation("decision", {})
                     clear_overlay()
-                    return node["true"]
+                    return matched_img["out"]
                 self._stop_requested.wait(timeout=poll_interval)
             clear_overlay()
-            return node["true"]
+            return None
 
         raise ValueError(f"unknown evaluation_mode: {mode}")

@@ -73,6 +73,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.capture = None
         self._pending_confirmation_overlay = None
         self._decision_overlay = None
+        self._decision_overlay_key = None
         self.hid_link = self._connect_hid()
 
         self._build_ui()
@@ -334,10 +335,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._decision_overlay_signal.emit(details)
 
     def _show_decision_overlay_on_gui_thread(self, details):
+        # A multi-image Decision node can show a different reference/region
+        # from one poll to the next (whichever image is currently the best
+        # match candidate - see engine/runner.py's _run_decision()), unlike
+        # the old single-image node where these never changed mid-poll -
+        # recreate the overlay whenever they do instead of reusing a stale
+        # region/pixmap.
+        overlay_key = (details['screen_rect'], details['reference_path'])
+        if self._decision_overlay is not None and overlay_key != self._decision_overlay_key:
+            self._decision_overlay.close()
+            self._decision_overlay = None
+
         if self._decision_overlay is None:
             self._decision_overlay = LiveReferenceOverlay(
                 details['screen_rect'], details['reference_path'],
             )
+            self._decision_overlay_key = overlay_key
             self._decision_overlay.show()
         self._decision_overlay.update_score(details['score'], details['threshold'])
 
@@ -348,6 +361,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._decision_overlay is not None:
             self._decision_overlay.close()
             self._decision_overlay = None
+            self._decision_overlay_key = None
 
     def _refresh_window_list(self):
         """Repopulates the dropdown with currently visible window titles,
@@ -444,13 +458,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 }
             elif isinstance(node, DecisionNode):
                 mode = node.get_property('evaluation_mode')
+                images = node.get_property('images')
                 entry = {
                     'type': 'decision',
-                    'reference_path': node.get_property('reference_path'),
-                    'region': list(node.get_region()),
+                    'images': [
+                        {
+                            'reference_path': img['reference_path'],
+                            'region': [
+                                int(img['region_x']), int(img['region_y']),
+                                int(img['region_w']), int(img['region_h']),
+                            ],
+                            'out': _first_connected_node_id(node.get_output(str(i + 1))),
+                        }
+                        for i, img in enumerate(images)
+                    ],
                     'match_threshold': float(node.get_property('match_threshold')),
                     'evaluation_mode': 'branch' if mode == EVAL_MODE_BRANCH else 'wait_until_true',
-                    'true': _first_connected_node_id(node.get_output('true')),
                 }
                 if entry['evaluation_mode'] == 'branch':
                     entry['false'] = _first_connected_node_id(node.get_output('false'))

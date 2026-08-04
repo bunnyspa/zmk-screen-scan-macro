@@ -15,12 +15,13 @@ class OverlayController:
     `mode`:
       - 'click_region': drag out a new rectangle, write it into the
         requesting node's click_x/y/w/h properties (ActionNode).
-      - 'show_region': briefly display whatever region the node already
-        has - a plain highlighted rectangle from click_x/y/w/h for nodes
-        that have one (ActionNode), or the node's own reference image
-        positioned at its stored region_x/y/w/h for nodes that have one
-        instead (DecisionNode, via get_reference_abs_path()/get_region() -
-        that position/size came for free from process_masked_reference()
+      - 'show_region' / 'show_region:<index>': briefly display whatever
+        region the node already has - a plain highlighted rectangle from
+        click_x/y/w/h for nodes that have one (ActionNode, no index), or
+        the reference image at `index` positioned at its stored
+        region_x/y/w/h for nodes with a list of them instead (DecisionNode,
+        via get_reference_abs_path(index)/get_region(index) - that
+        position/size came for free from process_masked_reference()
         cropping to the content's own bounding box within the originally
         uploaded screenshot, so no separate live matching pass is needed
         to locate it). Both node types share this one button/mode so
@@ -41,8 +42,9 @@ class OverlayController:
     def request_pick(self, node, mode):
         if mode == 'click_region':
             self._pick_region(node)
-        elif mode == 'show_region':
-            self._show_region(node)
+        elif mode.startswith('show_region'):
+            index = int(mode.split(':', 1)[1]) if ':' in mode else None
+            self._show_region(node, index)
 
     def _get_window_rect_or_warn(self):
         window_title = self._window_title_resolver()
@@ -85,9 +87,9 @@ class OverlayController:
     def _clear_pick_overlay(self):
         self._active_pick_overlay = None
 
-    def _show_region(self, node):
+    def _show_region(self, node, index=None):
         if hasattr(node, 'get_reference_abs_path'):
-            self._show_reference_preview(node)
+            self._show_reference_preview(node, index)
         else:
             self._show_click_region(node)
 
@@ -102,7 +104,7 @@ class OverlayController:
         self._active_highlight_overlay = RegionHighlightOverlay(screen_rect)
         self._active_highlight_overlay.show()
 
-    def _show_reference_preview(self, node):
+    def _show_reference_preview(self, node, index):
         window_title = self._window_title_resolver()
         if not window_title:
             QtWidgets.QMessageBox.warning(
@@ -127,7 +129,7 @@ class OverlayController:
             )
             return
 
-        abs_path = node.get_reference_abs_path()
+        abs_path = node.get_reference_abs_path(index)
         if not abs_path or not os.path.exists(abs_path):
             QtWidgets.QMessageBox.warning(
                 None, 'Show Region', 'No reference image has been set for this node yet.',
@@ -140,7 +142,7 @@ class OverlayController:
             return
 
         win_x, win_y, _win_w, _win_h = window_rect
-        region_x, region_y, _region_w, _region_h = node.get_region()
+        region_x, region_y, _region_w, _region_h = node.get_region(index)
         screen_pos = (win_x + region_x, win_y + region_y)
         self._active_highlight_overlay = StaticReferenceOverlay(screen_pos, pixmap)
         self._active_highlight_overlay.show()

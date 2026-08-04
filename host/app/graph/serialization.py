@@ -2,7 +2,8 @@
 
 import os
 
-REFERENCE_IMAGE_PROPERTIES = ('reference_path', 'reference_full_path')
+IMAGE_LIST_PROPERTY = 'images'
+IMAGE_ENTRY_PATH_KEYS = ('reference_path', 'reference_full_path')
 
 
 def load_profile_into_graph(profile_manager, graph_widget, profile_name):
@@ -32,14 +33,13 @@ def _delete_unreferenced_images(profile_manager, graph_widget, profile_name):
 
     referenced_filenames = set()
     for node in graph_widget.graph.all_nodes():
-        if not hasattr(node, 'get_property'):
+        if not hasattr(node, 'get_property') or not node.has_property(IMAGE_LIST_PROPERTY):
             continue
-        for prop_name in REFERENCE_IMAGE_PROPERTIES:
-            if not node.has_property(prop_name):
-                continue
-            relative_path = node.get_property(prop_name)
-            if relative_path:
-                referenced_filenames.add(os.path.basename(relative_path))
+        for entry in node.get_property(IMAGE_LIST_PROPERTY) or []:
+            for key in IMAGE_ENTRY_PATH_KEYS:
+                relative_path = entry.get(key)
+                if relative_path:
+                    referenced_filenames.add(os.path.basename(relative_path))
 
     for filename in os.listdir(images_dir):
         if filename not in referenced_filenames:

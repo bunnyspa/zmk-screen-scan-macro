@@ -102,11 +102,9 @@ def test_decision_branch_true_and_false(tmp_path):
         "nodes": {
             "d1": {
                 "type": "decision",
-                "reference_path": "ref.png",
-                "region": [10, 10, 10, 10],
+                "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "true_action"}],
                 "match_threshold": 0.99,
                 "evaluation_mode": "branch",
-                "true": "true_action",
                 "false": "false_action",
             },
             "true_action": {"type": "action", "action_type": "key_press",
@@ -141,12 +139,10 @@ def test_decision_wait_until_true_polls_until_match(tmp_path):
         "nodes": {
             "d1": {
                 "type": "decision",
-                "reference_path": "ref.png",
-                "region": [10, 10, 10, 10],
+                "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "done"}],
                 "match_threshold": 0.99,
                 "evaluation_mode": "wait_until_true",
                 "poll_interval_ms": 10,
-                "true": "done",
             },
             "done": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "done"},
         },
@@ -157,6 +153,97 @@ def test_decision_wait_until_true_polls_until_match(tmp_path):
     _run_briefly(graph, capture, sink, seconds=0.3, profile_dir=tmp_path)
 
     assert sink.sent  # eventually matched and proceeded to "done"
+
+
+def _two_image_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
+    """Two OR'd reference images at disjoint regions - image "1" (region A,
+    content 100) takes 'a_action', image "2" (region B, content 200) takes
+    'b_action'. Returns (graph, content_a, content_b, region_a, region_b)
+    so callers can build frames with either/both/neither region matching."""
+    content_a = np.full((10, 10, 3), 100, dtype=np.uint8)
+    content_b = np.full((10, 10, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "a.png"), np.dstack([content_a, np.full((10, 10), 255, dtype=np.uint8)]))
+    cv2.imwrite(str(tmp_path / "b.png"), np.dstack([content_b, np.full((10, 10), 255, dtype=np.uint8)]))
+
+    region_a = [10, 10, 10, 10]
+    region_b = [50, 50, 10, 10]
+
+    graph = {
+        "start_node": "d1",
+        "nodes": {
+            "d1": {
+                "type": "decision",
+                "images": [
+                    {"reference_path": "a.png", "region": region_a, "out": "a_action"},
+                    {"reference_path": "b.png", "region": region_b, "out": "b_action"},
+                ],
+                "match_threshold": 0.99,
+                "evaluation_mode": evaluation_mode,
+                "poll_interval_ms": poll_interval_ms,
+                "false": "false_action",
+            },
+            "a_action": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "a_action"},
+            "b_action": {"type": "action", "action_type": "key_press", "key_combo": "b", "out": "b_action"},
+            "false_action": {"type": "action", "action_type": "key_press", "key_combo": "c", "out": "false_action"},
+        },
+    }
+    return graph, content_a, content_b, region_a, region_b
+
+
+def _frame_with(content, region):
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    if content is not None:
+        x, y, w, h = region
+        frame[y:y + h, x:x + w] = content
+    return frame
+
+
+def test_decision_or_match_first_image_wins_when_multiple_match(tmp_path):
+    graph, content_a, content_b, region_a, region_b = _two_image_graph(tmp_path, "branch")
+    frame = _frame_with(content_a, region_a)
+    x, y, w, h = region_b
+    frame[y:y + h, x:x + w] = content_b  # both regions now match their own reference
+
+    sink = RecordingCommandSink()
+    _run_briefly(graph, FakeCapture([frame]), sink, seconds=0.1, profile_dir=tmp_path)
+
+    assert sink.sent
+    assert sink.sent[0].keycodes == (wire.keycode_for_letter("a"),)  # image "1" wins the tie
+
+
+def test_decision_or_match_falls_through_to_second_image(tmp_path):
+    graph, _content_a, content_b, _region_a, region_b = _two_image_graph(tmp_path, "branch")
+    frame = _frame_with(content_b, region_b)  # only image "2"'s region matches
+
+    sink = RecordingCommandSink()
+    _run_briefly(graph, FakeCapture([frame]), sink, seconds=0.1, profile_dir=tmp_path)
+
+    assert sink.sent
+    assert sink.sent[0].keycodes == (wire.keycode_for_letter("b"),)
+
+
+def test_decision_or_match_takes_false_when_no_image_matches(tmp_path):
+    graph, _content_a, _content_b, _region_a, _region_b = _two_image_graph(tmp_path, "branch")
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    sink = RecordingCommandSink()
+    _run_briefly(graph, FakeCapture([frame]), sink, seconds=0.1, profile_dir=tmp_path)
+
+    assert sink.sent
+    assert sink.sent[0].keycodes == (wire.keycode_for_letter("c"),)
+
+
+def test_decision_or_match_wait_until_true_takes_whichever_image_matches_first(tmp_path):
+    graph, _content_a, content_b, _region_a, region_b = _two_image_graph(tmp_path, "wait_until_true")
+    nonmatching = np.zeros((100, 100, 3), dtype=np.uint8)
+    matching_b = _frame_with(content_b, region_b)  # image "1" never matches, only "2" does
+
+    sink = RecordingCommandSink()
+    capture = FakeCapture([nonmatching, nonmatching, matching_b])
+    _run_briefly(graph, capture, sink, seconds=0.3, profile_dir=tmp_path)
+
+    assert sink.sent
+    assert sink.sent[0].keycodes == (wire.keycode_for_letter("b"),)
 
 
 def test_action_click_delegates_to_cursor_click_at_target(monkeypatch):
@@ -414,12 +501,10 @@ def _decision_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
         "nodes": {
             "d1": {
                 "type": "decision",
-                "reference_path": "ref.png",
-                "region": [10, 10, 10, 10],
+                "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "done"}],
                 "match_threshold": 0.99,
                 "evaluation_mode": evaluation_mode,
                 "poll_interval_ms": poll_interval_ms,
-                "true": "done",
                 "false": "done",
             },
             "done": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "done"},
