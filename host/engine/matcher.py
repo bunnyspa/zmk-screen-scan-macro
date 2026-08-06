@@ -1,10 +1,10 @@
 """Masked template matching against a live captured frame.
 
-Per VisionGraph's DecisionNode design: `region` is where the reference was
-cropped from in the original window screenshot, so it directly locates the
-expected content in the live window - no separate search pass. This assumes
-the target window's layout hasn't shifted since the reference was captured
-(VisionGraph's own docs flag this as an unvalidated assumption).
+`region` is where the reference was cropped from in the original window
+screenshot, so it directly locates the expected content in the live
+window - no separate search pass. This assumes the target window's layout
+hasn't shifted since the reference was captured - an unvalidated
+assumption, not yet a confirmed guarantee.
 """
 from __future__ import annotations
 

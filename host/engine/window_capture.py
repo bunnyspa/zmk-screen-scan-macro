@@ -1,4 +1,4 @@
-"""Live window capture, ported from VisionGraph's app/capture/window_capture.py.
+"""Live window capture.
 
 Uses `windows-capture` (Windows Graphics Capture API), which reads frames
 straight from the window's own compositor surface instead of grabbing desktop

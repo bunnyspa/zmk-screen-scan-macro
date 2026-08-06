@@ -84,8 +84,30 @@ def test_action_with_no_out_ends_run_instead_of_erroring():
     runner.start()
     runner.join(timeout=2)  # dead end - thread should exit on its own, no stop() needed
 
-    assert not runner._thread.is_alive()
+    assert not runner.is_running()
     assert len(sink.sent) == 1  # ran once, then stopped at the dangling "out"
+
+
+def test_is_running_reflects_the_thread_actually_finishing_on_its_own():
+    # Regression test: is_running() must go False once a dead-end node ends
+    # the run by itself, not just after an explicit .stop() - a caller that
+    # tracked "still running" some other way (e.g. just "did I ever call
+    # stop() on this") would report a finished run as active forever,
+    # confirmed via a real report of the web UI's Run button never
+    # reverting to "Run" after reaching a dead end.
+    sink = RecordingCommandSink()
+    graph = {
+        "start_node": "a1",
+        "nodes": {"a1": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": None}},
+    }
+    runner = MacroRunner(graph, FakeCapture([None]), sink)
+
+    assert runner.is_running() is False  # never started yet
+
+    runner.start()
+    runner.join(timeout=2)
+
+    assert runner.is_running() is False  # ended itself at the dead end, no stop() called
 
 
 def test_decision_branch_true_and_false(tmp_path):
@@ -388,6 +410,32 @@ def test_ensure_focus_raises_focus_timeout_instead_of_looping_forever():
     )
     with pytest.raises(FocusTimeoutError):
         runner._ensure_focus()
+
+
+def test_full_run_surfaces_focus_timeout_via_error_instead_of_dying_silently():
+    # Regression test: a real report where a single key-press action never
+    # fired with zero indication why. Root cause: .start() runs on a
+    # background thread, and an uncaught exception there (FocusTimeoutError,
+    # here - the target window never came to foreground) just ends the
+    # thread with nothing surfaced anywhere a GUI user would see - not a
+    # dead end (which is a normal, silent, expected way to finish), a real
+    # failure that needs to be visible.
+    sink = RecordingCommandSink()
+    runner = MacroRunner(
+        _KEY_PRESS_GRAPH, FakeCapture([None]), sink, hwnd=1234,
+        focus_policy=FOCUS_POLICY_PAUSE_UNTIL_FOCUSED,
+        is_window_focused=lambda hwnd: False, focus_window=lambda hwnd: None,
+        focus_poll_interval_ms=10, max_focus_wait_seconds=0.05,
+    )
+
+    assert runner.error is None
+    runner.start()
+    runner.join(timeout=2)
+
+    assert not runner.is_running()
+    assert runner.error is not None
+    assert 'did not come to focus' in runner.error
+    assert sink.sent == []  # never actually pressed anything
 
 
 def test_confirmation_mode_key_press_waits_for_confirm_before_sending():

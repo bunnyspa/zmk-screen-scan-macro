@@ -16,7 +16,7 @@ which is smaller than GetWindowRect() by an invisible resize-border margin
 (~7-8px per side on Windows 10/11). A Decision node's region_x/y/w/h are
 measured directly within the reference image the user uploaded, so they
 already match WindowsCapture's convention - engine/matcher.py's per-frame
-cropping is correct without any adjustment. Only app/ui/overlay_controller.py's
+cropping is correct without any adjustment. Only app/pick_controller.py's
 "Show Region" preview for Decision nodes needed to switch to
 get_window_extended_frame_bounds() instead of get_window_rect() - see its
 own comment for the bug this fixed.
@@ -193,9 +193,8 @@ def get_window_screen_origin(hwnd) -> tuple[int, int]:
     hardware as the actual cause of a consistently-offset click.
 
     NOTE: this is NOT the same origin Decision-node region coordinates
-    use - see get_window_extended_frame_origin() below, and
-    docs/design-decisions.md's addendum on the ~7px "Show Region" preview
-    offset this distinction was confirmed by."""
+    use - see get_window_extended_frame_origin() below. Confirmed by a
+    real ~7px "Show Region" preview offset that this distinction fixed."""
     rect = wintypes.RECT()
     _user32.GetWindowRect(hwnd, ctypes.byref(rect))
     return rect.left, rect.top

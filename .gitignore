@@ -4,7 +4,7 @@ __pycache__/
 .pytest_cache/
 
 # User-local runtime data - profile.json + reference images created
-# wherever the app is run from (see PROFILES_ROOT in host/app/main_window.py),
+# wherever the app is run from (see PROFILES_ROOT in host/main.py),
 # not source. Anchored to the repo root (leading slash) - unanchored
 # "profiles/" would also match host/app/profiles/, the actual source
 # package.

@@ -1,5 +1,11 @@
 """Enumerates visible top-level window titles, so the target-window field
-can offer a dropdown instead of requiring the exact title typed by hand."""
+can offer a dropdown instead of requiring the exact title typed by hand.
+
+Currently unused - the old NodeGraphQt desktop app's toolbar had dropdowns
+for this; the web UI's target-executable/target-window-title fields are
+still plain text inputs (host/webui/index.html). Left in place rather than
+deleted since it's plain win32 enumeration, not NodeGraphQt-coupled, and
+could back the same dropdown feature in the web UI later."""
 import ctypes
 import sys
 from ctypes import wintypes
@@ -7,8 +13,7 @@ from pathlib import Path
 
 user32 = ctypes.windll.user32
 
-# engine/ is a sibling of app/ under host/ - see main_window.py's own
-# comment on this for why.
+# engine/ is a sibling of app/ under host/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.window_resolve import get_window_executable, list_top_level_windows  # noqa: E402
 

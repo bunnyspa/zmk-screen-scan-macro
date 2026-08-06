@@ -5,6 +5,7 @@ plan's stub sink is no longer needed since the real transport now exists.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,7 +52,18 @@ class HidCommandSink:
     def send(self, command: Command) -> None:
         self._seq = (self._seq + 1) % 256
         payload = command.encode(self._seq)
-        self._dev.write(bytes([0x00]) + payload)
+        report = bytes([0x00]) + payload
+        # dev.write()'s return value (bytes actually written, per hidapi)
+        # was never checked or logged - a report that looks fully "sent"
+        # from the caller's side (no exception - engine/runner.py's own
+        # "sending key press" log fires either way) but never actually
+        # reaches the device would previously have been indistinguishable
+        # from one that did.
+        written = self._dev.write(report)
+        logger.info(
+            "HidCommandSink: wrote %s/%d bytes (action=0x%02x seq=%d)",
+            written, len(report), command.action, self._seq,
+        )
 
 
 class RecordingCommandSink:

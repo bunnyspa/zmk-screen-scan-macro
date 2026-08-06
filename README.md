@@ -108,6 +108,4 @@ focus mid-run: pause until refocused, or grab focus and resume automatically.
 
 ## Notes
 
-See `docs/wire-protocol.md` for the full Raw HID packet layout,
-`docs/design-decisions.md` for design rationale, and `docs/dev-phases.md`
-for build/verification history.
+See `docs/wire-protocol.md` for the full Raw HID packet layout.

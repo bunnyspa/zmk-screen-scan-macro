@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Screen Scan Macro - web UI skeleton</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+    #sidebar { width: 220px; border-right: 1px solid #ccc; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; }
+    #profile-list { flex: 1; overflow-y: auto; list-style: none; margin: 10px 0; padding: 0; }
+    #profile-list li { padding: 6px 8px; cursor: pointer; border-radius: 4px; }
+    #profile-list li:hover { background: #eee; }
+    #profile-list li.selected { background: #cde; font-weight: bold; }
+    #sidebar button { margin-bottom: 4px; }
+    /* min-height: 0 on the flex chain (#main -> #profile-form -> canvas) is
+       load-bearing, not decorative - without it, a flex item's default
+       min-height:auto stops it from ever shrinking below its content size,
+       so #drawflow-canvas's flex:1 would be ignored and #main would just
+       overflow the window instead of the canvas actually filling it. */
+    #main { flex: 1; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; }
+    #main label { display: block; margin-top: 10px; font-size: 13px; color: #333; }
+    #main input[type=text] { width: 300px; }
+    #error-bar { color: white; background: #c0392b; padding: 8px; display: none; margin-bottom: 10px; }
+    #profile-form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+    /* Everything about the current profile except the graph itself (target/
+       focus/confirmation-mode fields, Save, Run/Confirm) lives in this one
+       toolbar row, visually separate from the canvas below it - purely a
+       layout change, same #profile-form show/hide gating and save/dirty
+       behavior as before. */
+    #profile-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; background: #f7f7f9; border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; margin-top: 12px; }
+    #profile-toolbar label { display: flex; flex-direction: column; gap: 2px; margin-top: 0; font-size: 12px; }
+    #profile-toolbar label.checkbox-label { flex-direction: row; align-items: center; }
+    #profile-toolbar input[type=text] { width: 170px; }
+    #profile-toolbar .profile-toolbar-divider { width: 1px; align-self: stretch; background: #ddd; }
+
+    #graph-toolbar { margin-top: 20px; }
+    #drawflow-canvas { margin-top: 8px; width: 100%; flex: 1; min-height: 0; border: 1px solid #ccc; position: relative; overflow: hidden; }
+    /* Drawflow's own defaults (.drawflow .drawflow-node { background: #0ff }
+       / .selected { background: red }) - overridden here since both are
+       hard on the eyes; !important needed since this <style> block loads
+       before vendor/drawflow/drawflow.min.css, so same-specificity rules
+       there would otherwise win by source order. */
+    .drawflow .drawflow-node { background: #f4f6f8 !important; }
+    .drawflow .drawflow-node.selected { background: #d9e6f7 !important; }
+    .drawflow-node { width: 220px; }
+    .drawflow-node .node-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .drawflow-node .node-type-label { font-weight: bold; flex: 1; }
+    .drawflow-node .icon-btn { border: none; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; }
+    .drawflow-node .icon-btn:hover { background: #eee; border-radius: 3px; }
+    .drawflow-node.is-start-node { border: 3px solid #ff9800 !important; box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.4); }
+    .drawflow-node.is-start-node .set-start-btn { color: #ff9800; }
+    .drawflow-node label { display: block; font-size: 11px; margin: 4px 0; }
+    .drawflow-node input, .drawflow-node select { width: 100%; box-sizing: border-box; }
+    /* Leaves room on the right for the port-aligned thumbnail column
+       (20px thumb + 4px gap, see DECISION_THUMB_SIZE/DECISION_THUMB_GAP in
+       graph_editor.js) so it doesn't sit on top of the form fields. */
+    .drawflow-node.decision-node .drawflow_content_node { padding-right: 28px; box-sizing: border-box; }
+    /* top/right/bottom/left spelled out, not the `inset: 0` shorthand -
+       QtWebEngine's bundled Chromium may be too old to support `inset`,
+       which would silently drop this rule and leave the overlay in normal
+       document flow (confirmed as the likely cause of thumbnails rendering
+       below the node instead of pinned to its ports). */
+    .drawflow-node .decision-thumb-overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
+    .drawflow-node .decision-node-thumb { position: absolute; width: 20px; height: 20px; object-fit: contain; background: #fff; border: 1px solid #ddd; }
+
+    #image-editor-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+    #image-editor-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; }
+    #image-editor-modal .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    #image-editor-modal .modal-header h3 { margin: 0; }
+    .image-editor-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .image-editor-thumb { width: 48px; height: 48px; object-fit: contain; background: #f4f4f4; border: 1px solid #ddd; }
+    .image-editor-index { width: 28px; font-size: 12px; color: #555; }
+    .image-editor-row button { margin-left: auto; }
+    .image-editor-row button + button { margin-left: 4px; }
+  </style>
+  <link rel="stylesheet" href="vendor/drawflow/drawflow.min.css">
+</head>
+<body>
+  <div id="sidebar">
+    <button id="new-btn">+ New</button>
+    <ul id="profile-list"></ul>
+    <button id="rename-btn" disabled>Rename</button>
+    <button id="duplicate-btn" disabled>Duplicate</button>
+    <button id="delete-btn" disabled>Delete</button>
+  </div>
+  <div id="main">
+    <div id="error-bar"></div>
+    <div id="profile-form" style="display:none;">
+      <div id="profile-toolbar">
+        <label>Target executable
+          <input type="text" id="target-executable">
+        </label>
+        <label>Target window title (fallback hint only)
+          <input type="text" id="target-window-title">
+        </label>
+        <label>Focus policy
+          <select id="focus-policy">
+            <option value="pause_until_focused">Pause until focused</option>
+            <option value="focus_and_resume">Focus and resume</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="confirmation-mode"> Confirmation mode
+        </label>
+        <span class="profile-toolbar-divider"></span>
+        <button id="save-btn">Save</button>
+        <span id="dirty-indicator" style="display:none; color: #c0392b;">unsaved changes</span>
+        <span class="profile-toolbar-divider"></span>
+        <button id="run-btn">Run</button>
+        <button id="confirm-btn" title="Confirms a pending click/key-press in confirmation mode - same as pressing the &amp;ssm_confirm physical key.">Confirm (OK)</button>
+        <span id="run-status" style="color: #555;"></span>
+      </div>
+
+      <div id="graph-toolbar">
+        <button id="add-action-btn">+ Action</button>
+        <button id="add-wait-btn">+ Wait</button>
+        <button id="add-decision-btn">+ Decision</button>
+      </div>
+      <div id="drawflow-canvas"></div>
+    </div>
+  </div>
+
+  <div id="image-editor-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Edit Reference Images</h3>
+        <button type="button" id="image-editor-close-btn">×</button>
+      </div>
+      <div id="image-editor-list"></div>
+      <button type="button" id="image-editor-add-btn" style="margin-top: 10px;">+ Add Image...</button>
+    </div>
+  </div>
+
+  <script src="vendor/drawflow/drawflow.min.js"></script>
+  <script src="graph_editor.js"></script>
+  <script>
+    // Note: window.prompt()/window.confirm() message strings must not
+    // contain literal " characters - pywebview's qt backend (QtWebEngine)
+    // renders these native dialogs in a way that shows a raw &quot; instead
+    // of decoding it, confirmed via manual testing. Use plain text without
+    // quoting the profile name instead (e.g. "Rename X to:", not
+    // 'Rename "X" to:').
+    let currentProfile = null;
+    let dirty = false;
+
+    function showError(message) {
+      const bar = document.getElementById('error-bar');
+      bar.textContent = message;
+      bar.style.display = 'block';
+    }
+
+    function clearError() {
+      document.getElementById('error-bar').style.display = 'none';
+    }
+
+    function setDirty(value) {
+      dirty = value;
+      document.getElementById('dirty-indicator').style.display = value ? 'inline' : 'none';
+      // Mirrors this flag (and, while a profile is open, a live snapshot of
+      // the graph/meta) into WebBridge so main.py's window-closing
+      // handler and &ssm_tog handler can check/use them without calling
+      // back into JS (see bridge.py's WebBridge.__init__ comment for why
+      // that deadlocks from those particular call sites).
+      pywebview.api.set_dirty(
+        value,
+        currentProfile ? exportGraphDocument() : null,
+        currentProfile ? currentMeta() : null,
+      );
+    }
+
+    function confirmDiscardIfDirty() {
+      if (!dirty) return true;
+      return window.confirm('Discard unsaved changes to ' + currentProfile + '?');
+    }
+
+    async function refreshProfileList(selectName) {
+      const names = await pywebview.api.list_profiles();
+      const list = document.getElementById('profile-list');
+      list.innerHTML = '';
+      names.forEach(function (name) {
+        const li = document.createElement('li');
+        li.textContent = name;
+        if (name === selectName) li.classList.add('selected');
+        li.addEventListener('click', function () { selectProfile(name); });
+        list.appendChild(li);
+      });
+      const hasSelection = names.includes(selectName);
+      document.getElementById('rename-btn').disabled = !hasSelection;
+      document.getElementById('duplicate-btn').disabled = !hasSelection;
+      document.getElementById('delete-btn').disabled = !hasSelection;
+    }
+
+    async function selectProfile(name) {
+      if (name === currentProfile) return;
+      if (!confirmDiscardIfDirty()) return;
+
+      const result = await pywebview.api.load_profile(name);
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+
+      currentProfile = name;
+      // #profile-form (which contains the Drawflow canvas) must already be
+      // visible before loadGraphDocument() runs - Drawflow computes each
+      // connection's path from its port elements' real on-screen position,
+      // which is all-zero while an ancestor is display:none, producing a
+      // connection that "exists" (dirty tracking, GraphDocument round-trip
+      // all still correct) but renders as an invisible zero-length wire.
+      // Only bites the very first profile selected in a session, since the
+      // form stays visible (just re-populated) on every switch after that -
+      // confirmed by a real report where a connection only "came back" on
+      // the second time its profile was opened.
+      document.getElementById('profile-form').style.display = 'flex';
+      const graph = result.graph || {};
+      // No legacy NodeGraphQt profiles exist anymore (the one that did was
+      // deleted) - an incompatible graph shape now means corrupted/unsupported
+      // data, which should fail loud rather than silently open as blank.
+      if (graphDocumentIsCompatible(graph)) {
+        loadGraphDocument(graph, result.image_thumbnails || {});
+      } else {
+        clearGraphEditor();
+        showError('This profile’s graph data is unsupported or corrupted and could not be loaded.');
+      }
+      setDirty(false);
+      document.getElementById('target-executable').value = result.meta.target_executable || '';
+      document.getElementById('target-window-title').value = result.meta.target_window_title || '';
+      document.getElementById('focus-policy').value = result.meta.focus_policy || 'pause_until_focused';
+      document.getElementById('confirmation-mode').checked = !!result.meta.confirmation_mode;
+
+      await refreshProfileList(name);
+    }
+
+    function currentMeta() {
+      return {
+        target_executable: document.getElementById('target-executable').value,
+        target_window_title: document.getElementById('target-window-title').value,
+        focus_policy: document.getElementById('focus-policy').value,
+        confirmation_mode: document.getElementById('confirmation-mode').checked,
+      };
+    }
+
+    async function saveCurrentProfile() {
+      if (!currentProfile) return;
+      const result = await pywebview.api.save_profile(currentProfile, exportGraphDocument(), currentMeta());
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      setDirty(false);
+    }
+
+    async function createProfile() {
+      if (!confirmDiscardIfDirty()) return;
+      const name = window.prompt('New profile name:');
+      if (!name) return;
+      const result = await pywebview.api.create_profile(name);
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      await selectProfile(result.name);
+    }
+
+    async function renameProfile() {
+      if (!currentProfile) return;
+      const newName = window.prompt('Rename ' + currentProfile + ' to:', currentProfile);
+      if (!newName || newName === currentProfile) return;
+      const result = await pywebview.api.rename_profile(currentProfile, newName);
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      currentProfile = null; // force selectProfile() to actually reload under the new name
+      await selectProfile(result.name);
+    }
+
+    async function duplicateProfile() {
+      if (!currentProfile) return;
+      const newName = window.prompt('Duplicate ' + currentProfile + ' as:');
+      if (!newName) return;
+      const result = await pywebview.api.duplicate_profile(currentProfile, newName);
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      await selectProfile(result.name);
+    }
+
+    async function deleteProfile() {
+      if (!currentProfile) return;
+      if (!window.confirm('Delete profile ' + currentProfile + '? This cannot be undone.')) return;
+      const result = await pywebview.api.delete_profile(currentProfile);
+      clearError();
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      currentProfile = null;
+      clearGraphEditor();
+      setDirty(false);
+      document.getElementById('profile-form').style.display = 'none';
+      await refreshProfileList(null);
+    }
+
+    // -- Run / Stop / Confirm ---------------------------------------------
+    // No push from Python here (see run_controller.py's module docstring
+    // for why window.evaluate_js() from a GUI-thread Qt slot is avoided
+    // entirely in this phase) - poll get_run_state() instead, the one
+    // direction (JS calling into Python) already proven safe throughout
+    // this migration.
+    let isRunning = false;
+
+    async function pollRunState() {
+      const state = await pywebview.api.get_run_state();
+      isRunning = state.running;
+      document.getElementById('run-btn').textContent = isRunning ? 'Stop' : 'Run';
+      document.getElementById('run-status').textContent = state.pending_status || '';
+      // A run can end on its own with a real failure, not just a dead end
+      // or a Stop click (e.g. the target window never came to focus in
+      // time) - previously silent. get_run_state() only ever returns this
+      // once per actual failure (see bridge.py's get_run_state()).
+      if (state.last_error) {
+        showError('Run stopped: ' + state.last_error);
+      }
+    }
+
+    async function toggleRun() {
+      clearError();
+      if (isRunning) {
+        const result = await pywebview.api.stop_macro();
+        if (!result.ok) showError(result.error);
+        await pollRunState();
+        return;
+      }
+
+      if (!currentProfile) {
+        showError('No profile is open.');
+        return;
+      }
+
+      // Same "save first?" behavior as the physical &ssm_tog key (see
+      // main.py's module docstring for why they share the run logic
+      // but not the popup mechanism) - always runs what's saved on disk,
+      // never live/unsaved state.
+      if (dirty) {
+        if (!window.confirm('Save changes to ' + currentProfile + ' before running?')) return;
+        const saveResult = await pywebview.api.save_profile(currentProfile, exportGraphDocument(), currentMeta());
+        if (!saveResult.ok) {
+          showError(saveResult.error);
+          return;
+        }
+        setDirty(false);
+      }
+
+      const result = await pywebview.api.run_saved_profile(currentProfile);
+      if (!result.ok) showError(result.error);
+      await pollRunState();
+    }
+
+    async function confirmMacro() {
+      await pywebview.api.confirm_macro();
+      await pollRunState();
+    }
+
+    window.addEventListener('pywebviewready', function () {
+      document.getElementById('new-btn').addEventListener('click', createProfile);
+      document.getElementById('rename-btn').addEventListener('click', renameProfile);
+      document.getElementById('duplicate-btn').addEventListener('click', duplicateProfile);
+      document.getElementById('delete-btn').addEventListener('click', deleteProfile);
+      document.getElementById('save-btn').addEventListener('click', saveCurrentProfile);
+      ['target-executable', 'target-window-title', 'focus-policy', 'confirmation-mode'].forEach(function (id) {
+        document.getElementById(id).addEventListener('input', function () { setDirty(true); });
+        document.getElementById(id).addEventListener('change', function () { setDirty(true); });
+      });
+
+      initGraphEditor(document.getElementById('drawflow-canvas'), function () { setDirty(true); });
+      document.getElementById('add-action-btn').addEventListener('click', addActionNode);
+      document.getElementById('add-wait-btn').addEventListener('click', addWaitNode);
+      document.getElementById('add-decision-btn').addEventListener('click', addDecisionNode);
+
+      document.getElementById('run-btn').addEventListener('click', toggleRun);
+      document.getElementById('confirm-btn').addEventListener('click', confirmMacro);
+      setInterval(pollRunState, 500);
+
+      refreshProfileList(null);
+    });
+  </script>
+</body>
+</html>

@@ -1,8 +1,8 @@
 """MacroRunner: walks a hand-authored graph, driving capture -> decision ->
 action -> real HID output via a CommandSink.
 
-Graph schema (plain JSON - NOT VisionGraph's NodeGraphQt session format; that
-translation is Phase 3's job once the real editor exists). See
+Graph schema (plain JSON - see graph_translation.build_engine_graph_from_document()
+for what actually produces this from the web UI's GraphDocument). See
 tests/fixtures/example_graph.json for a worked example.
 
 {
@@ -135,6 +135,15 @@ class MacroRunner:
         self._confirmation_event = threading.Event()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
+        # Set if _run() ends via an uncaught exception (e.g. FocusTimeoutError
+        # - the target window never came to foreground within
+        # max_focus_wait_seconds) rather than a dead end or .stop(). Without
+        # this, such a failure was completely silent: an unhandled exception
+        # on a background thread just ends the thread with nothing printed
+        # anywhere a GUI app's user would ever see, confirmed via a real
+        # report of a one-shot action simply never firing with no
+        # indication why.
+        self.error: str | None = None
 
     def confirm(self) -> None:
         """Call from the OK button or the &ssm_confirm physical key
@@ -156,7 +165,28 @@ class MacroRunner:
         if self._thread is not None:
             self._thread.join(timeout)
 
+    def is_running(self) -> bool:
+        """False once the run has actually ended, whether from .stop()
+        or - just as often, since a dead-end node (no outgoing connection)
+        is a normal, non-error way for a run to finish, see this module's
+        docstring - the background thread simply returning on its own.
+        Callers that only track "did I call .stop() yet" (e.g. a naive
+        `self.macro_runner is not None` check) miss the dead-end case
+        entirely and report a run as still active forever after it already
+        ended by itself."""
+        return self._thread is not None and self._thread.is_alive()
+
     def _run(self) -> None:
+        logger.info("MacroRunner: run starting at node %r", self._graph.get("start_node"))
+        try:
+            self._run_loop()
+        except Exception as exc:
+            logger.exception("MacroRunner: run ended with an unhandled error")
+            self.error = str(exc)
+        else:
+            logger.info("MacroRunner: run ended (stopped=%s)", self._stop_requested.is_set())
+
+    def _run_loop(self) -> None:
         node_id = self._graph["start_node"]
         while not self._stop_requested.is_set():
             if node_id is None:
@@ -164,9 +194,11 @@ class MacroRunner:
                 # to None (see main_window.py's _first_connected_node_id) -
                 # that's a dead end by design, not an error, so the run just
                 # ends here rather than KeyError-ing on nodes[None].
+                logger.info("MacroRunner: reached a dead end (unconnected port) - run ending")
                 return
             node = self._graph["nodes"][node_id]
             node_type = node["type"]
+            logger.info("MacroRunner: visiting node %r (%s)", node_id, node_type)
 
             if node_type == "action":
                 self._run_action(node)
@@ -239,6 +271,7 @@ class MacroRunner:
 
     def _run_action(self, node: dict) -> None:
         if not self._ensure_focus():
+            logger.info("MacroRunner: stop requested while waiting for focus - action skipped")
             return
 
         action_type = node["action_type"]
@@ -252,7 +285,9 @@ class MacroRunner:
                 screen_pos = get_window_screen_origin(self._hwnd) if self._hwnd is not None else None
                 details = {"key_combo": node["key_combo"], "screen_pos": screen_pos}
                 if not self._await_confirmation("key_press", details):
+                    logger.info("MacroRunner: stop requested while awaiting confirmation - key press skipped")
                     return
+            logger.info("MacroRunner: sending key press %r", node["key_combo"])
             self._sink.send(Command(action=wire.ACTION_KEY_PRESS, keycodes=(keycode,)))
         elif action_type == "click":
             button = _MOUSE_BUTTONS[node.get("mouse_button", "left")]
@@ -265,9 +300,12 @@ class MacroRunner:
                 x, y, w, h = click_rect
                 screen_rect = (origin_x + x, origin_y + y, w, h)
                 if not self._await_confirmation("click", {"screen_rect": screen_rect}):
+                    logger.info("MacroRunner: stop requested while awaiting confirmation - click skipped")
                     return
+                logger.info("MacroRunner: sending click at %r", click_rect)
                 self._sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=button))
             else:
+                logger.info("MacroRunner: sending click at %r", click_rect)
                 click_at_target(self._hwnd, click_rect, self._sink, button,
                                 gain_estimate=self._cursor_gain_estimate,
                                 crossing_mode=self._crossing_mode)

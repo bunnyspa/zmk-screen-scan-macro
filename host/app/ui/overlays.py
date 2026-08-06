@@ -204,7 +204,8 @@ class StaticReferenceOverlay(_PassiveOverlay):
     target window, so it can be visually compared against the live target
     underneath. Its size is just the image's own size (already cropped to
     content by process_masked_reference); it's positioned at the node's
-    stored region_x/y (see DecisionNode.get_region())."""
+    stored region_x/y (an image entry's region_x/y/w/h fields in the
+    Decision node's GraphDocument properties)."""
 
     def __init__(self, screen_pos, pixmap, duration_ms=3000):
         x, y = screen_pos
