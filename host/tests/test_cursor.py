@@ -64,6 +64,12 @@ _NO_SETTLE_DELAY = {
     "get_monitor_rects": lambda: _HUGE_MONITOR_RECTS,
 }
 
+# click_at_target/move_cursor_to_target now aim at a uniformly random point
+# within click_rect by default (see engine/cursor.py's module docstring) -
+# pinned back to the region's exact center here so every "center = (x, y)"
+# comment/assertion throughout this file stays deterministic and meaningful.
+_CENTER_TARGET = {"pick_target_in_rect": lambda x, y, w, h: (x + w // 2, y + h // 2)}
+
 
 def test_click_at_target_converges_in_one_move_when_delta_lands_exactly():
     # Distance kept within the attempt-1 calibration-probe cap
@@ -80,6 +86,7 @@ def test_click_at_target_converges_in_one_move_when_delta_lands_exactly():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (100, 100),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -105,6 +112,7 @@ def test_click_at_target_caps_the_first_attempt_as_a_calibration_probe():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (3000, 3000),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -132,6 +140,7 @@ def test_click_at_target_preserves_direction_when_capping_an_asymmetric_delta():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (1526, 162),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -156,6 +165,7 @@ def test_click_at_target_corrects_when_move_undershoots():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (0, 0),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -179,6 +189,7 @@ def test_click_at_target_converges_despite_consistent_amplification():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (0, 0),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
@@ -198,6 +209,7 @@ def test_click_at_target_raises_and_does_not_click_when_it_never_converges():
             get_window_screen_origin=lambda hwnd: (0, 0),
             max_iterations=3,
             **_NO_SETTLE_DELAY,
+            **_CENTER_TARGET,
         )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -237,6 +249,7 @@ def test_click_at_target_reuses_persisted_gain_estimate_across_calls():
         get_window_screen_origin=lambda hwnd: (0, 0),
         gain_estimate=gain_estimate,
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
     first_call_move_count = len([c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE])
     assert gain_estimate.x != 1.0  # learned something real, not still neutral
@@ -250,10 +263,52 @@ def test_click_at_target_reuses_persisted_gain_estimate_across_calls():
         get_window_screen_origin=lambda hwnd: (200, 200),  # a different target this time
         gain_estimate=gain_estimate,  # same, already-learned estimate
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
     second_call_move_count = len([c for c in second_sink.sent if c.action == wire.ACTION_MOUSE_MOVE])
 
     assert second_call_move_count < first_call_move_count
+
+
+def test_default_pick_target_in_rect_varies_and_stays_in_bounds():
+    # Not always the region's center (or any other fixed point) - and
+    # never outside click_rect either.
+    x, y, w, h = 100, 200, 30, 40
+    points = {cursor_module._default_pick_target_in_rect(x, y, w, h) for _ in range(50)}
+    assert len(points) > 1  # varies call to call, not a fixed point
+    for px, py in points:
+        assert x <= px < x + w
+        assert y <= py < y + h
+
+
+def test_click_at_target_never_converges_within_tolerance_but_outside_the_rect():
+    # pick_target_in_rect is forced to click_rect's bottom-right-most valid
+    # pixel (3, 3) for click_rect=(0, 0, 4, 4) - right at the edge. The
+    # cursor starts at (5, 5): within tolerance_px (2) of that point on
+    # both axes already, but outside the rect itself (region is [0, 4) x
+    # [0, 4)). Satisfying tolerance alone isn't enough (see module
+    # docstring) - since both dx and dy are already within tolerance_px,
+    # need_x/need_y never request any further correction, so this can
+    # never escape and must raise rather than accept a click just outside
+    # the box.
+    sink = SimulatingSink(start_pos=(5, 5), move_ratio=1.0)
+
+    with pytest.raises(CursorConvergenceError):
+        click_at_target(
+            hwnd=1,
+            click_rect=(0, 0, 4, 4),
+            sink=sink,
+            get_cursor_pos=sink.get_pos,
+            get_window_screen_origin=lambda hwnd: (0, 0),
+            pick_target_in_rect=lambda x, y, w, h: (x + w - 1, y + h - 1),  # (3, 3)
+            max_iterations=3,
+            **_NO_SETTLE_DELAY,
+        )
+
+    move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
+    assert len(move_commands) == 3  # exhausted max_iterations, never escaped
+    assert all((c.dx, c.dy) == (0, 0) for c in move_commands)  # "in tolerance" - nothing requested
+    assert not any(c.action == wire.ACTION_MOUSE_CLICK for c in sink.sent)
 
 
 # -- cross-monitor crossing (real geometry, checked before the normal approach) --
@@ -290,6 +345,7 @@ def test_click_at_target_proactive_mode_avoids_a_third_monitors_edge_in_the_corr
             crossing_mode=cursor_module.CROSSING_MODE_PROACTIVE,
             sleep=lambda seconds: None,
             now=lambda: 0.0,
+            **_CENTER_TARGET,
         )
     except CursorConvergenceError:
         pass  # only the first (repositioning) move matters for this test
@@ -318,6 +374,7 @@ def test_click_at_target_proactive_mode_still_crosses_a_plain_seam():
         crossing_mode=cursor_module.CROSSING_MODE_PROACTIVE,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
@@ -420,6 +477,7 @@ def test_click_at_target_recrosses_when_gain_adaptation_overshoots_onto_a_wrong_
         get_monitor_rects=lambda: monitors,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK
@@ -443,6 +501,7 @@ def test_click_at_target_crosses_to_target_monitor_before_normal_approach():
         get_monitor_rects=lambda: _SIDE_BY_SIDE_MONITORS,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -465,6 +524,7 @@ def test_click_at_target_skips_crossing_when_already_on_target_monitor():
         get_cursor_pos=sink.get_pos,
         get_window_screen_origin=lambda hwnd: (100, 100),
         **_NO_SETTLE_DELAY,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -489,6 +549,7 @@ def test_click_at_target_steps_back_once_with_a_single_move_when_crossing_gets_s
         get_monitor_rects=lambda: _SIDE_BY_SIDE_MONITORS,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -525,6 +586,7 @@ def test_click_at_target_gives_up_crossing_early_after_step_back_also_fails():
             # feature) would retrigger crossing again on every attempt
             # since this fake never actually moves.
             max_iterations=1,
+            **_CENTER_TARGET,
         )
 
     crossing_push_commands = [
@@ -554,6 +616,7 @@ def test_click_at_target_skips_crossing_when_monitors_not_simply_adjacent():
         get_monitor_rects=lambda: diagonal_monitors,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     move_commands = [c for c in sink.sent if c.action == wire.ACTION_MOUSE_MOVE]
@@ -623,6 +686,7 @@ def test_click_at_target_chains_through_an_intermediate_monitor():
         get_monitor_rects=lambda: three_in_a_row,
         sleep=lambda seconds: None,
         now=lambda: 0.0,
+        **_CENTER_TARGET,
     )
 
     assert sink.sent[-1].action == wire.ACTION_MOUSE_CLICK

@@ -74,7 +74,14 @@ target is confirmed to be on another monitor - it's not run
 unconditionally, and the step-back only fires reactively if the straight
 push actually gets stuck, not as a mandatory preamble.
 
-If it still hasn't converged within tolerance_px after max_iterations
+The exact pixel clicked is a random point within click_rect, not always its
+center - re-rolled on every call, so repeated runs of the same macro don't
+always click the identical pixel. Convergence requires both: within
+tolerance_px of that picked point, AND inside click_rect itself - the
+latter matters because the picked point can land near an edge, where a
+tolerance_px-sized overshoot could otherwise land just outside the rect.
+
+If it still hasn't converged (both conditions at once) after max_iterations
 corrective moves, it raises instead of clicking - a misclick is worse than
 aborting the macro.
 """
@@ -83,6 +90,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import logging
+import random
 import sys
 import time
 from pathlib import Path
@@ -570,6 +578,12 @@ def _cross_monitors(
     )
 
 
+def _default_pick_target_in_rect(x, y, w, h):
+    """A uniformly random point within click_rect - the default aim point,
+    re-rolled on every call rather than always the region's center."""
+    return random.randint(x, x + w - 1), random.randint(y, y + h - 1)
+
+
 def move_cursor_to_target(
     hwnd,
     click_rect: tuple[int, int, int, int],
@@ -592,17 +606,22 @@ def move_cursor_to_target(
     stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
     crossing_mode: str = CROSSING_MODE_REACTIVE,
     gain_estimate: GainEstimate | None = None,
+    pick_target_in_rect=_default_pick_target_in_rect,
 ) -> tuple[int, int]:
-    """Moves the cursor toward click_rect's center (window-relative),
+    """Moves the cursor toward a random point within click_rect
+    (window-relative, re-picked via pick_target_in_rect on every call),
     re-measuring after each move and adapting to whatever the actual
     movement/requested-movement ratio turns out to be - the same logic
     click_at_target() uses, minus actually clicking. Split out so a
     caller (confirmation mode - see MacroRunner) can pause between the
     cursor arriving and the click being sent, e.g. to highlight the
     target region and wait for the user to confirm before the click
-    itself goes out. Returns the final (x, y) once within tolerance_px.
-    get_cursor_pos/get_window_screen_origin/sleep/now are injectable for
-    testing without touching real win32 calls or a real clock.
+    itself goes out. Returns the final (x, y) once within tolerance_px of
+    the picked point AND inside click_rect itself (see module docstring
+    for why both). get_cursor_pos/get_window_screen_origin/sleep/now are
+    injectable for testing without touching real win32 calls or a real
+    clock; pick_target_in_rect is injectable so tests can pin a
+    deterministic point instead of a random one.
 
     Pass a GainEstimate owned by the caller (see MacroRunner) to carry
     the learned gain across multiple clicks in the same run, so repeat
@@ -615,14 +634,21 @@ def move_cursor_to_target(
     CROSSING_MODE_PROACTIVE.
 
     Raises CursorConvergenceError if the cursor still isn't within
-    tolerance_px after max_iterations corrective moves."""
+    tolerance_px of the picked point and inside click_rect after
+    max_iterations corrective moves."""
     x, y, w, h = click_rect
-    target_client_x = x + w // 2
-    target_client_y = y + h // 2
+    target_client_x, target_client_y = pick_target_in_rect(x, y, w, h)
 
     origin_x, origin_y = get_window_screen_origin(hwnd)
     target_x = origin_x + target_client_x
     target_y = origin_y + target_client_y
+    # Screen-space bounds of click_rect itself - required in addition to
+    # tolerance_px (see module docstring) since the picked point can sit
+    # near an edge, where a tolerance_px-sized overshoot could otherwise
+    # land just outside the rect. Half-open, matching
+    # find_containing_monitor()'s convention (monitors.py).
+    region_left, region_top = origin_x + x, origin_y + y
+    region_right, region_bottom = region_left + w, region_top + h
 
     cur_x, cur_y = get_cursor_pos()
 
@@ -669,7 +695,9 @@ def move_cursor_to_target(
 
         dx = target_x - cur_x
         dy = target_y - cur_y
-        if abs(dx) <= tolerance_px and abs(dy) <= tolerance_px:
+        in_tolerance = abs(dx) <= tolerance_px and abs(dy) <= tolerance_px
+        in_rect = region_left <= cur_x < region_right and region_top <= cur_y < region_bottom
+        if in_tolerance and in_rect:
             logger.info("move_cursor_to_target: converged after %d move(s), at (%d, %d), "
                         "remaining delta (%d, %d)", attempt - 1, cur_x, cur_y, dx, dy)
             return cur_x, cur_y
@@ -716,7 +744,9 @@ def move_cursor_to_target(
         # Checked again immediately, not just at the top of the next
         # iteration - a move can land exactly on target on the very last
         # allowed attempt, with no further iteration left to notice it.
-        if abs(target_x - cur_x) <= tolerance_px and abs(target_y - cur_y) <= tolerance_px:
+        in_tolerance = abs(target_x - cur_x) <= tolerance_px and abs(target_y - cur_y) <= tolerance_px
+        in_rect = region_left <= cur_x < region_right and region_top <= cur_y < region_bottom
+        if in_tolerance and in_rect:
             logger.info("move_cursor_to_target: converged after %d move(s), at (%d, %d)",
                         attempt, cur_x, cur_y)
             return cur_x, cur_y
@@ -755,16 +785,17 @@ def click_at_target(
     stuck_confirmation_count: int = DEFAULT_STUCK_CONFIRMATION_COUNT,
     crossing_mode: str = CROSSING_MODE_REACTIVE,
     gain_estimate: GainEstimate | None = None,
+    pick_target_in_rect=_default_pick_target_in_rect,
 ) -> None:
-    """Moves the cursor to click_rect's center (see move_cursor_to_target
-    for the full mechanism) then clicks. Raises CursorConvergenceError
-    instead of clicking if it doesn't converge within max_iterations - a
-    misclick is worse than aborting the macro."""
+    """Moves the cursor to a random point within click_rect (see
+    move_cursor_to_target for the full mechanism) then clicks. Raises
+    CursorConvergenceError instead of clicking if it doesn't converge
+    within max_iterations - a misclick is worse than aborting the macro."""
     move_cursor_to_target(
         hwnd, click_rect, sink, get_cursor_pos, get_window_screen_origin, sleep, now,
         max_iterations, tolerance_px, settle_poll_interval_seconds, settle_stable_reads,
         settle_max_wait_seconds, max_step_px, initial_probe_max_px, get_monitor_rects,
         crossing_step_px, max_crossing_attempts, safe_margin_px, stuck_confirmation_count,
-        crossing_mode, gain_estimate,
+        crossing_mode, gain_estimate, pick_target_in_rect,
     )
     sink.send(Command(action=wire.ACTION_MOUSE_CLICK, mouse_buttons=mouse_button))
