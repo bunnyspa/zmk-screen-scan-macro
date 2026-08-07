@@ -22,14 +22,24 @@ RunController: the overlay widgets themselves may only be constructed/
 touched on the GUI thread, but every method here can be called from
 pywebview's own background API thread."""
 import os
+import sys
 import threading
+from pathlib import Path
 
 from PyQt5 import QtCore, QtGui
 
 from .ui.overlays import (
     ClickRegionOverlay, RegionHighlightOverlay, StaticReferenceOverlay,
-    get_window_extended_frame_bounds, get_window_rect,
+    find_window_handle, get_window_extended_frame_bounds, get_window_rect,
 )
+
+# engine/ is a sibling of app/ under host/ - see run_controller.py's own
+# comment on this for why. TODO: focus_window/is_window_focused are pure
+# win32 utility, not engine-specific - move them out of engine/focus.py
+# into a shared host-root module (matching protocol.py's precedent) so
+# app/ doesn't need to reach into engine/ for this. Deferred for now.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from engine.focus import focus_window  # noqa: E402
 
 
 class PickController(QtCore.QObject):
@@ -82,6 +92,7 @@ class PickController(QtCore.QObject):
         window_rect, error = self._resolve_window_rect(target_window_title)
         if error:
             return {'ok': False, 'error': error}
+        self._bring_target_window_forward(target_window_title)
         win_x, win_y, _win_w, _win_h = window_rect
         screen_rect = (win_x + x, win_y + y, max(w, 1), max(h, 1))
         self._show_click_region_signal.emit(screen_rect)
@@ -101,6 +112,7 @@ class PickController(QtCore.QObject):
         window_rect, error = self._resolve_window_rect(target_window_title, extended_frame_bounds=True)
         if error:
             return {'ok': False, 'error': error}
+        self._bring_target_window_forward(target_window_title)
         win_x, win_y, _win_w, _win_h = window_rect
         screen_pos = (win_x + region_x, win_y + region_y)
         self._show_reference_signal.emit(screen_pos, abs_image_path)
@@ -129,3 +141,19 @@ class PickController(QtCore.QObject):
                 'Make sure the target window is running and visible.'
             )
         return window_rect, None
+
+    @staticmethod
+    def _bring_target_window_forward(target_window_title):
+        """Un-minimizes/raises the target window before a preview overlay
+        (RegionHighlightOverlay/StaticReferenceOverlay) is shown over it -
+        otherwise WindowStaysOnTopHint (see _PassiveOverlay) means the
+        highlight paints on top of whatever window actually happens to be
+        in front, which is confusing if that's not the target (e.g. this
+        app's own window, or something else the user alt-tabbed to).
+        Best-effort: if the window closed in the instant between
+        _resolve_window_rect() succeeding and this call, silently skip -
+        the overlay will still show, just without this improvement, not
+        worth failing the whole preview over."""
+        hwnd = find_window_handle(target_window_title)
+        if hwnd:
+            focus_window(hwnd)
