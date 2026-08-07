@@ -30,16 +30,16 @@ from PyQt5 import QtCore, QtGui
 
 from .ui.overlays import (
     ClickRegionOverlay, RegionHighlightOverlay, StaticReferenceOverlay,
-    find_window_handle, get_window_extended_frame_bounds, get_window_rect,
+    get_window_extended_frame_bounds, get_window_rect,
 )
 
-# engine/ is a sibling of app/ under host/ - see run_controller.py's own
-# comment on this for why. TODO: focus_window/is_window_focused are pure
-# win32 utility, not engine-specific - move them out of engine/focus.py
-# into a shared host-root module (matching protocol.py's precedent) so
-# app/ doesn't need to reach into engine/ for this. Deferred for now.
+# host/ is the parent of app/ - see engine/cursor.py's own comment on this
+# same pattern for importing protocol.py. win32_focus.py is shared with
+# engine/focus.py (MacroRunner's focus policy) - neither app/ nor engine/
+# owns it, so it lives at host/ root rather than app/ reaching into
+# engine/ (or vice versa) for it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from engine.focus import focus_window  # noqa: E402
+from win32_focus import find_window_handle, focus_window  # noqa: E402
 
 
 class PickController(QtCore.QObject):

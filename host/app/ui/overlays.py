@@ -14,16 +14,6 @@ def _overlay_label_font():
     return QtGui.QFont('Segoe UI', 12, QtGui.QFont.Bold)
 
 
-def find_window_handle(title):
-    """The named window's HWND, or None if no such window is currently
-    open - the same FindWindowW() lookup get_window_rect()/
-    get_window_extended_frame_bounds() already do internally, exposed
-    separately for callers (pick_controller.py) that need the handle
-    itself, e.g. to bring the window forward via engine/focus.py's
-    focus_window() before showing a preview overlay on top of it."""
-    return ctypes.windll.user32.FindWindowW(None, title) or None
-
-
 def get_window_rect(title):
     """Screen-coordinate (x, y, width, height) of the named window's outer
     frame, or None if no such window is currently open. Includes an

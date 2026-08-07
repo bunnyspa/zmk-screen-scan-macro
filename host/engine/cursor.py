@@ -235,10 +235,6 @@ def get_window_extended_frame_origin(hwnd) -> tuple[int, int]:
     return rect.left, rect.top
 
 
-def find_window(title: str):
-    return _user32.FindWindowW(None, title)
-
-
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
