@@ -19,7 +19,12 @@
     #main { flex: 1; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; }
     #main label { display: block; margin-top: 10px; font-size: 13px; color: #333; }
     #main input[type=text] { width: 300px; }
-    #error-bar { color: white; background: #c0392b; padding: 8px; display: none; margin-bottom: 10px; }
+    /* position: fixed (not in normal document flow) so showing/hiding this
+       never shifts the toolbar/canvas below it - it used to sit inline at
+       the top of #main and pushed everything down whenever an error
+       appeared, a jarring layout shift for something that's supposed to
+       be a transient notice. */
+    #error-bar { position: fixed; left: 0; right: 0; bottom: 0; color: white; background: #c0392b; padding: 10px 16px; display: none; text-align: center; box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.25); z-index: 300; }
     #profile-form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
     /* Everything about the current profile except the graph itself (target/
@@ -51,6 +56,12 @@
     .drawflow-node.is-start-node .set-start-btn { color: #ff9800; }
     .drawflow-node label { display: block; font-size: 11px; margin: 4px 0; }
     .drawflow-node input, .drawflow-node select { width: 100%; box-sizing: border-box; }
+    /* #main input[type=text] (below) sets a 300px width for the sidebar's
+       profile-name field; the key-capture input is the only input[type=text]
+       inside a node (X/Y/W/H are type=number, Button is a <select>) and its
+       #main-scoped selector otherwise wins on specificity over the rule
+       above, overflowing it out of the 220px node. */
+    #main .drawflow-node input[type=text] { width: 100%; }
     /* Leaves room on the right for the port-aligned thumbnail column
        (20px thumb + 4px gap, see DECISION_THUMB_SIZE/DECISION_THUMB_GAP in
        graph_editor.js) so it doesn't sit on top of the form fields. */
@@ -72,6 +83,10 @@
     .image-editor-index { width: 28px; font-size: 12px; color: #555; }
     .image-editor-row button { margin-left: auto; }
     .image-editor-row button + button { margin-left: 4px; }
+
+    #graph-context-menu { position: fixed; display: none; background: white; color: #111; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); z-index: 200; padding: 4px 0; min-width: 140px; }
+    #graph-context-menu button { display: block; width: 100%; box-sizing: border-box; text-align: left; padding: 6px 14px; border: none; background: none; cursor: pointer; font-size: 13px; }
+    #graph-context-menu button:hover { background: #eee; }
   </style>
   <link rel="stylesheet" href="vendor/drawflow/drawflow.min.css">
 </head>
@@ -112,12 +127,17 @@
       </div>
 
       <div id="graph-toolbar">
-        <button id="add-action-btn">+ Action</button>
-        <button id="add-wait-btn">+ Wait</button>
-        <button id="add-decision-btn">+ Decision</button>
+        <button id="fit-view-btn">Fit to View</button>
+        <span style="margin-left: 10px; color: #777; font-size: 12px;">Right-click the canvas to add a node</span>
       </div>
       <div id="drawflow-canvas"></div>
     </div>
+  </div>
+
+  <div id="graph-context-menu">
+    <button type="button" data-node-type="action">+ Action</button>
+    <button type="button" data-node-type="wait">+ Wait</button>
+    <button type="button" data-node-type="decision">+ Decision</button>
   </div>
 
   <div id="image-editor-modal">
@@ -219,6 +239,7 @@
       // data, which should fail loud rather than silently open as blank.
       if (graphDocumentIsCompatible(graph)) {
         loadGraphDocument(graph, result.image_thumbnails || {});
+        fitViewToNodes();
       } else {
         clearGraphEditor();
         showError('This profile’s graph data is unsupported or corrupted and could not be loaded.');
@@ -380,9 +401,7 @@
       });
 
       initGraphEditor(document.getElementById('drawflow-canvas'), function () { setDirty(true); });
-      document.getElementById('add-action-btn').addEventListener('click', addActionNode);
-      document.getElementById('add-wait-btn').addEventListener('click', addWaitNode);
-      document.getElementById('add-decision-btn').addEventListener('click', addDecisionNode);
+      document.getElementById('fit-view-btn').addEventListener('click', fitViewToNodes);
 
       document.getElementById('run-btn').addEventListener('click', toggleRun);
       document.getElementById('confirm-btn').addEventListener('click', confirmMacro);

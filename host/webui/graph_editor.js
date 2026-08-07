@@ -322,7 +322,138 @@ function initGraphEditor(containerEl, onDirty) {
   });
   editor.on('connectionRemoved', function () { onDirty(); });
 
+  // Drawflow's own 'contextmenu' event (see its contextmenu(e) method)
+  // already preventDefault()s the native browser menu and, when the user
+  // had a node/connection selected, shows its own delete-"x" box - that's
+  // the existing "right-click a connection, click x to delete" behavior,
+  // untouched here. Only show our own node-creation menu when the right-
+  // click landed on genuinely empty canvas (not a node), so the two never
+  // fight over the same gesture.
+  editor.on('contextmenu', function (e) {
+    if (!e.target.closest('.drawflow-node')) {
+      showGraphContextMenu(e.clientX, e.clientY);
+    }
+  });
+
   initImageEditorModal();
+  initGraphContextMenu();
+}
+
+// Converts a viewport point (e.g. a contextmenu event's clientX/clientY)
+// into Drawflow's local/unscaled coordinate space - the same unprojection
+// Drawflow's own source uses internally (e.g. its drawConnection()):
+// subtract the (already zoom/pan-transformed) canvas's own screen origin,
+// then divide by the current zoom.
+function screenToLocalPosition(clientX, clientY) {
+  const rect = editor.precanvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) / editor.zoom,
+    y: (clientY - rect.top) / editor.zoom,
+  };
+}
+
+let contextMenuPosition = null;
+
+function showGraphContextMenu(clientX, clientY) {
+  contextMenuPosition = screenToLocalPosition(clientX, clientY);
+  const menu = document.getElementById('graph-context-menu');
+  menu.style.left = clientX + 'px';
+  menu.style.top = clientY + 'px';
+  menu.style.display = 'block';
+}
+
+function hideGraphContextMenu() {
+  document.getElementById('graph-context-menu').style.display = 'none';
+  contextMenuPosition = null;
+}
+
+function initGraphContextMenu() {
+  const menu = document.getElementById('graph-context-menu');
+  menu.querySelectorAll('button[data-node-type]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      const position = contextMenuPosition;
+      if (button.dataset.nodeType === 'action') addActionNode(position);
+      else if (button.dataset.nodeType === 'wait') addWaitNode(position);
+      else if (button.dataset.nodeType === 'decision') addDecisionNode(position);
+      hideGraphContextMenu();
+    });
+  });
+  document.addEventListener('click', function (event) {
+    if (menu.style.display === 'block' && !menu.contains(event.target)) {
+      hideGraphContextMenu();
+    }
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') hideGraphContextMenu();
+  });
+}
+
+// Frames every node in the current graph within #drawflow-canvas's visible
+// area - no built-in Drawflow equivalent (it only has zoom_in/zoom_out/
+// zoom_reset, all relative to the current view, not content-aware).
+//
+// Resets to an identity transform (zoom=1, canvas at 0,0) immediately
+// before measuring, rather than inverting whatever transform is currently
+// applied - a version that did the latter worked on the second press but
+// not the first (and again after every window resize, first-press-fails-
+// second-succeeds), pointing at editor.canvas_x/canvas_y/zoom being
+// stale/inconsistent with what's actually painted at the moment it read
+// them. With the transform forced to zero right before measuring,
+// getBoundingClientRect() already reports local coordinates directly - no
+// inversion, no dependency on that state being trustworthy. This never
+// paints a visible flash at the reset zoom level: the reset and the final
+// fitted transform both happen synchronously in this one function, and
+// the browser only paints once the whole task finishes.
+function fitViewToNodes() {
+  const nodeEls = Array.from(document.querySelectorAll('#drawflow-canvas .drawflow-node'));
+  if (nodeEls.length === 0) return;
+
+  const container = document.getElementById('drawflow-canvas');
+  editor.zoom = 1;
+  editor.zoom_last_value = 1;
+  editor.canvas_x = 0;
+  editor.canvas_y = 0;
+  editor.precanvas.style.transform = 'translate(0px, 0px) scale(1)';
+
+  const containerRect = container.getBoundingClientRect();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodeEls.forEach(function (el) {
+    const rect = el.getBoundingClientRect();
+    minX = Math.min(minX, rect.left - containerRect.left);
+    minY = Math.min(minY, rect.top - containerRect.top);
+    maxX = Math.max(maxX, rect.right - containerRect.left);
+    maxY = Math.max(maxY, rect.bottom - containerRect.top);
+  });
+
+  const viewWidth = container.clientWidth;
+  const viewHeight = container.clientHeight;
+  const padding = 40; // local-space margin around the content, each side
+
+  const contentWidth = (maxX - minX) + padding * 2;
+  const contentHeight = (maxY - minY) + padding * 2;
+  let zoom = Math.min(viewWidth / contentWidth, viewHeight / contentHeight);
+  zoom = Math.min(Math.max(zoom, editor.zoom_min), editor.zoom_max);
+
+  // precanvas has no transform-origin override in Drawflow's vendor CSS, so
+  // it uses the CSS default (50% 50%, its own center) - NOT the top-left
+  // corner. translate(x,y) scale(s) around a center origin O maps a local
+  // point P to O + s*(P - O) + (x,y), not simply x + P*s - so hitting an
+  // exact target screen position for the content's center requires this
+  // extra origin term (viewWidth/2 and viewHeight/2 here, since precanvas
+  // is stretched to exactly fill #drawflow-canvas, so its own center
+  // equals the container's center) rather than the naive top-left-origin
+  // formula this used before.
+  const contentCenterX = minX + (maxX - minX) / 2;
+  const contentCenterY = minY + (maxY - minY) / 2;
+  const canvasX = zoom * (viewWidth / 2 - contentCenterX);
+  const canvasY = zoom * (viewHeight / 2 - contentCenterY);
+
+  editor.zoom = zoom;
+  editor.zoom_last_value = zoom;
+  editor.canvas_x = canvasX;
+  editor.canvas_y = canvasY;
+  editor.precanvas.style.transform = 'translate(' + canvasX + 'px, ' + canvasY + 'px) scale(' + zoom + ')';
+  editor.dispatch('zoom', zoom);
 }
 
 // Every output port here means "go to exactly one next node" (matches
@@ -342,8 +473,12 @@ function enforceSingleOutputConnection(payload) {
   });
 }
 
-function addActionNode() {
-  const pos = nextSpawnPosition();
+// position is optional ({x, y} in Drawflow's local/unscaled coordinate
+// space) - the graph-canvas context menu passes the actual right-clicked
+// spot (see screenToLocalPosition()); callers with no particular spot in
+// mind (none currently) would fall back to the staggered default.
+function addActionNode(position) {
+  const pos = position || nextSpawnPosition();
   const id = editor.addNode(
     'action', 1, 1, pos.x, pos.y, 'action-node',
     defaultActionProperties(), renderActionNodeHtml(),
@@ -352,16 +487,16 @@ function addActionNode() {
   return id;
 }
 
-function addWaitNode() {
-  const pos = nextSpawnPosition();
+function addWaitNode(position) {
+  const pos = position || nextSpawnPosition();
   return editor.addNode(
     'wait', 1, 1, pos.x, pos.y, 'wait-node',
     defaultWaitProperties(), renderWaitNodeHtml(),
   );
 }
 
-function addDecisionNode() {
-  const pos = nextSpawnPosition();
+function addDecisionNode(position) {
+  const pos = position || nextSpawnPosition();
   const id = editor.addNode(
     'decision', 1, 1, pos.x, pos.y, 'decision-node', // 1 output: just 'false', 0 images
     defaultDecisionProperties(), renderDecisionNodeHtml(),
