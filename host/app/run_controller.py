@@ -36,8 +36,9 @@ from PyQt5 import QtCore
 
 from .ui.overlays import LiveReferenceOverlay, PendingKeyPressOverlay, RegionHighlightOverlay
 
-# engine/ is a sibling of app/ under host/ - see main_window.py's own comment
-# on this for why.
+# engine/ is a sibling of app/ under host/, with no installed package
+# tying them together (this app runs as a script from host/, not an
+# installed package) - hence the sys.path insert to reach it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.command import HidCommandSink  # noqa: E402
 from engine.runner import MacroRunner  # noqa: E402
@@ -47,8 +48,7 @@ from engine.window_resolve import resolve_target_window as _default_resolve_targ
 # RegionHighlightOverlay normally auto-closes after duration_ms - in
 # confirmation mode it needs to stay up until the user actually confirms,
 # not on a timer, so it's given a duration far longer than any real wait
-# and closed explicitly once .confirm() fires instead (verbatim from
-# main_window.py).
+# and closed explicitly once .confirm() fires instead.
 _CONFIRMATION_HIGHLIGHT_DURATION_MS = 3600_000
 
 
@@ -120,13 +120,14 @@ class RunController(QtCore.QObject):
               profile_dir, focus_policy, confirmation_mode):
         """Returns {'ok': True} or {'ok': False, 'error': ...} - never
         raises, matching every other bridge-facing method's contract (see
-        webui/bridge.py). Unlike main_window.py's _start_macro(), an
-        ambiguous target (resolve_target_window's needs_confirmation=True)
-        returns an error asking for a more specific target rather than
-        showing an interactive window-choice dialog - this method can run
-        on pywebview's own background API thread (called from
-        bridge.run_macro()), not necessarily the GUI thread, and a
-        synchronous native dialog needs the GUI thread."""
+        webui/bridge.py). Unlike the old NodeGraphQt desktop app's
+        MainWindow._start_macro() (long gone - this is the only Run/Stop
+        implementation), an ambiguous target (resolve_target_window's
+        needs_confirmation=True) returns an error asking for a more
+        specific target rather than showing an interactive window-choice
+        dialog - this method can run on pywebview's own background API
+        thread (called from bridge.run_macro()), not necessarily the GUI
+        thread, and a synchronous native dialog needs the GUI thread."""
         if self._hid_link is None:
             return {'ok': False, 'error': 'No Raw HID device connected.'}
         if self.is_running:
@@ -239,7 +240,7 @@ class RunController(QtCore.QObject):
         # from one poll to the next (whichever image is currently the best
         # match candidate - see engine/runner.py's _run_decision()) -
         # recreate the overlay whenever they change instead of reusing a
-        # stale region/pixmap (verbatim from main_window.py).
+        # stale region/pixmap.
         overlay_key = (details['screen_rect'], details['reference_path'])
         if self._decision_overlay is not None and overlay_key != self._decision_overlay_key:
             self._decision_overlay.close()

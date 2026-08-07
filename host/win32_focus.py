@@ -1,35 +1,71 @@
-"""Win32 window-focus utilities, shared by engine/focus.py (MacroRunner's
-focus policy) and app/pick_controller.py (bringing the target window
-forward before a "Show Region" preview overlay) - neither is more
-"native" an owner than the other, so this lives at host/ root instead of
-under either, the same convention protocol.py already establishes for
-code both app/ and engine/ need without one importing from the other.
+"""Win32 window utilities shared by app/ and engine/ - neither is a more
+"native" owner of any of these than the other, so they live at host/
+root instead of under either, the same convention protocol.py already
+establishes for code both app/ and engine/ need without one importing
+from the other.
 
 find_window_handle() also absorbs what used to be a duplicate
 FindWindowW() lookup - engine/cursor.py had its own find_window(), unused
 anywhere (confirmed via grep - dead code, removed), and
 app/ui/overlays.py had find_window_handle() with an identical body,
 moved here.
+
+get_window_rect_by_hwnd()/get_extended_frame_bounds_by_hwnd() are the raw
+GetWindowRect()/DWMWA_EXTENDED_FRAME_BOUNDS win32 calls, factored out
+because engine/cursor.py's get_window_screen_origin()/
+get_window_extended_frame_origin() (hwnd -> (x, y) origin only) and
+app/ui/overlays.py's get_window_rect()/get_window_extended_frame_bounds()
+(title -> (x, y, w, h) full rect) were each independently making the same
+two win32 calls - down to both defining their own copy of
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9. Each of those four functions keeps its
+own name, signature, and failure-handling behavior exactly as before
+(cursor.py's assume an already-live hwnd and don't check for failure;
+overlays.py's do, since the window could have closed between its own
+FindWindowW() and the rect lookup) - only the actual ctypes calls
+underneath are now shared, not the public API each caller already
+depends on (including tests that monkeypatch these functions by name).
 """
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import sys
 
 _user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 _kernel32 = ctypes.windll.kernel32 if sys.platform == "win32" else None
+_dwmapi = ctypes.windll.dwmapi if sys.platform == "win32" else None
 
 _SW_RESTORE = 9
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 
 def find_window_handle(title):
     """The named window's HWND, or None if no such window is currently
-    open. Used to resolve a title into the hwnd focus_window()/
-    is_window_focused() below need - app/ui/overlays.py's get_window_rect()/
-    get_window_extended_frame_bounds() do their own separate FindWindowW()
-    lookup rather than calling this, since they need the window's rect,
-    not its handle, and don't otherwise need anything else from here."""
+    open."""
     return _user32.FindWindowW(None, title) or None
+
+
+def get_window_rect_by_hwnd(hwnd):
+    """(left, top, right, bottom) via GetWindowRect(), or None if the
+    call fails (e.g. a stale/closed hwnd)."""
+    rect = ctypes.wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def get_extended_frame_bounds_by_hwnd(hwnd):
+    """(left, top, right, bottom) via DWMWA_EXTENDED_FRAME_BOUNDS
+    (excludes the invisible resize-border margin GetWindowRect()
+    includes - see get_window_rect_by_hwnd()), or None if DWM
+    composition is unavailable or the call otherwise fails."""
+    rect = ctypes.wintypes.RECT()
+    hresult = _dwmapi.DwmGetWindowAttribute(
+        hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect),
+    )
+    if hresult != 0:
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
 
 
 def is_window_focused(hwnd) -> bool:

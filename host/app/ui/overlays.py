@@ -1,10 +1,14 @@
-import ctypes
-import ctypes.wintypes
+import sys
+from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-
-_DWMWA_EXTENDED_FRAME_BOUNDS = 9
+# host/ is the parent of app/ - see engine/cursor.py's own comment on this
+# same pattern for importing protocol.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from win32_focus import (  # noqa: E402
+    find_window_handle, get_extended_frame_bounds_by_hwnd, get_window_rect_by_hwnd,
+)
 
 
 def _overlay_label_font():
@@ -24,13 +28,14 @@ def get_window_rect(title):
     get_window_screen_origin() targets against it), so don't switch this
     one to extended frame bounds without also updating cursor.py - see
     get_window_extended_frame_bounds() for the other convention."""
-    hwnd = ctypes.windll.user32.FindWindowW(None, title)
+    hwnd = find_window_handle(title)
     if not hwnd:
         return None
-    rect = ctypes.wintypes.RECT()
-    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+    rect = get_window_rect_by_hwnd(hwnd)
+    if rect is None:
         return None
-    return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+    left, top, right, bottom = rect
+    return left, top, right - left, bottom - top
 
 
 def get_window_extended_frame_bounds(title):
@@ -48,16 +53,14 @@ def get_window_extended_frame_bounds(title):
     this window" mode (e.g. Windows' Snipping Tool) also captures at this
     size, matching what a human visually sees as "the window" - not
     get_window_rect()'s invisible padding."""
-    hwnd = ctypes.windll.user32.FindWindowW(None, title)
+    hwnd = find_window_handle(title)
     if not hwnd:
         return None
-    rect = ctypes.wintypes.RECT()
-    hresult = ctypes.windll.dwmapi.DwmGetWindowAttribute(
-        hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect),
-    )
-    if hresult != 0:
+    rect = get_extended_frame_bounds_by_hwnd(hwnd)
+    if rect is None:
         return None
-    return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+    left, top, right, bottom = rect
+    return left, top, right - left, bottom - top
 
 
 class ClickRegionOverlay(QtWidgets.QWidget):

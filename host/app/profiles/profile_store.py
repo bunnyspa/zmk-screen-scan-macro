@@ -51,15 +51,3 @@ def save(profile_dir, profile_name, session_data, target_window_title='',
     with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     os.replace(tmp_path, path)
-
-
-def empty_session_data(profile_name):
-    return {
-        'schema_version': SCHEMA_VERSION,
-        'profile_name': profile_name,
-        'target_executable': '',
-        'target_window_title': '',
-        'focus_policy': 'pause_until_focused',
-        'confirmation_mode': False,
-        'session': {},
-    }

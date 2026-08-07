@@ -5,17 +5,12 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from ctypes import wintypes
 
 _user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
-
-class _RECT(ctypes.Structure):
-    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
-
 _MONITORENUMPROC = ctypes.WINFUNCTYPE(
-    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_RECT), ctypes.c_double,
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.RECT), ctypes.c_double,
 )
 
 

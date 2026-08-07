@@ -97,6 +97,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import protocol as wire  # noqa: E402
+from win32_focus import (  # noqa: E402
+    get_extended_frame_bounds_by_hwnd, get_window_rect_by_hwnd,
+)
 
 from .command import Command, CommandSink  # noqa: E402
 from .monitors import find_containing_monitor, list_monitor_rects  # noqa: E402
@@ -203,13 +206,8 @@ def get_window_screen_origin(hwnd) -> tuple[int, int]:
     NOTE: this is NOT the same origin Decision-node region coordinates
     use - see get_window_extended_frame_origin() below. Confirmed by a
     real ~7px "Show Region" preview offset that this distinction fixed."""
-    rect = wintypes.RECT()
-    _user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    return rect.left, rect.top
-
-
-_DWMWA_EXTENDED_FRAME_BOUNDS = 9
-_dwmapi = ctypes.windll.dwmapi if sys.platform == "win32" else None
+    rect = get_window_rect_by_hwnd(hwnd)
+    return (rect[0], rect[1]) if rect is not None else (0, 0)
 
 
 def get_window_extended_frame_origin(hwnd) -> tuple[int, int]:
@@ -226,13 +224,10 @@ def get_window_extended_frame_origin(hwnd) -> tuple[int, int]:
     Falls back to get_window_screen_origin() if DWM composition is
     unavailable, rather than raising - a live run's decision-overlay
     display is a nice-to-have, not worth crashing the match logic over."""
-    rect = wintypes.RECT()
-    hresult = _dwmapi.DwmGetWindowAttribute(
-        hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect),
-    )
-    if hresult != 0:
+    rect = get_extended_frame_bounds_by_hwnd(hwnd)
+    if rect is None:
         return get_window_screen_origin(hwnd)
-    return rect.left, rect.top
+    return rect[0], rect[1]
 
 
 def _clamp(value: float, low: float, high: float) -> float:

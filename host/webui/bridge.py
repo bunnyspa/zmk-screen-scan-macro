@@ -1,5 +1,8 @@
-"""The pywebview js_api bridge - the only module allowed to import
-`webview` (see the approved migration plan's §3/§5).
+"""The pywebview js_api bridge - the only app-logic module allowed to
+import `webview` (see the approved migration plan's §3/§5). main.py's
+own entrypoint bootstrap (create_window()/start()) is the one necessary
+exception - something has to construct the window this bridge is passed
+into as js_api, so it can't itself be the one calling create_window().
 
 Phase 3: profile CRUD, backed directly by the existing, already
 framework-agnostic ProfileManager/profile_store (host/app/profiles/) -

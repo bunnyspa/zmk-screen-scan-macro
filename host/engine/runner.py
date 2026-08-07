@@ -18,8 +18,8 @@ tests/fixtures/example_graph.json for a worked example.
 }
 
 An "out"/"true"/"false" of null (an unconnected port, per
-main_window.py's _first_connected_node_id) is a dead end: the run just
-ends there rather than erroring.
+graph_translation.py's _first_connected_document_node) is a dead end: the
+run just ends there rather than erroring.
 
 action:   action_type: "key_press" | "click"
           key_combo: str (single a-z letter, key_press)
@@ -191,9 +191,10 @@ class MacroRunner:
         while not self._stop_requested.is_set():
             if node_id is None:
                 # An out/true/false port with nothing wired to it translates
-                # to None (see main_window.py's _first_connected_node_id) -
-                # that's a dead end by design, not an error, so the run just
-                # ends here rather than KeyError-ing on nodes[None].
+                # to None (see graph_translation.py's
+                # _first_connected_document_node) - that's a dead end by
+                # design, not an error, so the run just ends here rather
+                # than KeyError-ing on nodes[None].
                 logger.info("MacroRunner: reached a dead end (unconnected port) - run ending")
                 return
             node = self._graph["nodes"][node_id]
@@ -334,7 +335,7 @@ class MacroRunner:
         # design discussion in the commit this came from. With multiple
         # images, whichever one is currently the best-scoring candidate is
         # shown (the eventual match isn't known until it crosses
-        # threshold) - the caller (main_window.py's
+        # threshold) - the caller (run_controller.py's
         # _show_decision_overlay_on_gui_thread) recreates the overlay
         # whenever the shown region/reference changes between polls.
         show_overlay = mode == "wait_until_true" or self._confirmation_mode
