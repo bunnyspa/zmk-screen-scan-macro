@@ -193,11 +193,11 @@ def test_stop_clears_pending_state_via_signal_not_a_direct_call():
     assert emitted == [True]
 
 
-def test_stop_emits_decision_overlay_hide_via_signal_not_a_direct_call():
+def test_stop_emits_branch_overlay_hide_via_signal_not_a_direct_call():
     controller = make_controller()
     controller.start({'start_node': 'n1', 'nodes': {}}, 'app.exe', '', '.', 'pause_until_focused', False)
     emitted = []
-    controller._decision_overlay_hide_signal.connect(lambda: emitted.append(True))
+    controller._branch_overlay_hide_signal.connect(lambda: emitted.append(True))
 
     controller.stop()
 

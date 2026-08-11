@@ -1,4 +1,4 @@
-from app.decision_images import rewire_ports_after_image_change
+from app.branch_images import rewire_ports_after_image_change
 
 
 def test_add_new_entry_has_no_connections():

@@ -23,8 +23,8 @@ def _validate_name(name):
 
 class ProfileManager:
     """CRUD over profile folders under `profiles_root`. Each profile is a
-    subfolder containing profile.json and an images/ folder for Decision
-    node reference images."""
+    subfolder containing profile.json and an images/ folder for Branch/
+    Branch (Wait) node reference images."""
 
     def __init__(self, profiles_root):
         self.profiles_root = profiles_root
@@ -114,6 +114,6 @@ class ProfileManager:
 
     def profile_dir(self, name):
         """Absolute path to the profile's own folder - needed by the engine
-        to resolve a Decision node's reference_path (stored relative, e.g.
-        'images/xxx_cropped.png')."""
+        to resolve a Branch/Branch (Wait) node's reference_path (stored
+        relative, e.g. 'images/xxx_cropped.png')."""
         return self._dir_for(name)

@@ -76,10 +76,19 @@
     .drawflow-node .branch-thumb-overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
     .drawflow-node .branch-node-thumb { position: absolute; width: 20px; height: 20px; object-fit: contain; background: #fff; border: 1px solid #ddd; }
 
-    #image-editor-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
-    #image-editor-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; }
+    /* top/right/bottom/left spelled out, not the `inset: 0` shorthand -
+       QtWebEngine's bundled Chromium doesn't support `inset` (confirmed
+       already for .branch-thumb-overlay above) - it silently drops the
+       rule, leaving this at position: fixed with no offsets at all, which
+       collapses it to its default top-left position instead of covering
+       the viewport (so align-items/justify-content centering had nothing
+       to center within). */
+    #image-editor-modal { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+    #image-editor-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
     #image-editor-modal .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     #image-editor-modal .modal-header h3 { margin: 0; }
+    #image-editor-modal .modal-header button { border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 3px; }
+    #image-editor-modal .modal-header button:hover { background: #eee; }
     .image-editor-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #eee; }
     .image-editor-thumb { width: 48px; height: 48px; object-fit: contain; background: #f4f4f4; border: 1px solid #ddd; }
     .image-editor-index { width: 28px; font-size: 12px; color: #555; }

@@ -44,7 +44,7 @@ def get_window_extended_frame_bounds(title):
     resize-border margin get_window_rect() includes), or None if no such
     window is currently open or DWM composition is unavailable.
 
-    This is the convention a Decision node's region_x/y/w/h are in -
+    This is the convention a Branch/Branch (Wait) node's region_x/y/w/h are in -
     process_masked_reference() measures them within whatever image the
     user uploaded, and confirmed directly against real hardware:
     WindowsCapture (this app's own live-capture library, used for actual
@@ -203,12 +203,12 @@ class PendingKeyPressOverlay(_PassiveOverlay):
 
 
 class StaticReferenceOverlay(_PassiveOverlay):
-    """Briefly displays a Decision node's reference image directly over the
-    target window, so it can be visually compared against the live target
-    underneath. Its size is just the image's own size (already cropped to
-    content by process_masked_reference); it's positioned at the node's
-    stored region_x/y (an image entry's region_x/y/w/h fields in the
-    Decision node's GraphDocument properties)."""
+    """Briefly displays a Branch/Branch (Wait) node's reference image
+    directly over the target window, so it can be visually compared against
+    the live target underneath. Its size is just the image's own size
+    (already cropped to content by process_masked_reference); it's
+    positioned at the node's stored region_x/y (an image entry's
+    region_x/y/w/h fields in the node's GraphDocument properties)."""
 
     def __init__(self, screen_pos, pixmap, duration_ms=3000):
         x, y = screen_pos
@@ -226,25 +226,26 @@ class StaticReferenceOverlay(_PassiveOverlay):
         painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
 
-_DECISION_OVERLAY_LABEL_HEIGHT = 20
+_BRANCH_OVERLAY_LABEL_HEIGHT = 20
 # Enough to fit "100.0%" in the label font without clipping - a narrow
-# Decision region (the real profile this feature was built against is
-# 8px wide) would otherwise clip the label to the region's own width.
-_DECISION_OVERLAY_MIN_LABEL_WIDTH = 60
+# Branch/Branch (Wait) region (the real profile this feature was built
+# against is 8px wide) would otherwise clip the label to the region's own
+# width.
+_BRANCH_OVERLAY_MIN_LABEL_WIDTH = 60
 
 
 class LiveReferenceOverlay(_PassiveOverlay):
-    """Shows a Decision node's reference image at 50% opacity over its live
-    region, plus a text label with the current match percentage - shown
-    during Wait Until True polling (regardless of confirmation mode)
-    and/or right before a decision resolves in confirmation mode (see
-    engine/runner.py's _run_decision()).
+    """Shows a Branch/Branch (Wait) node's reference image at 50% opacity
+    over its live region, plus a text label with the current match
+    percentage - shown during Branch (Wait) polling (regardless of
+    confirmation mode) and/or right before a branch/branch_wait resolves in
+    confirmation mode (see engine/runner.py's _make_branch_helpers()).
 
     Unlike RegionHighlightOverlay/StaticReferenceOverlay, this persists
     across repeated update_score() calls (one per poll) instead of being
-    recreated each time - and never auto-closes on a timer, since a Wait
-    Until True poll can run indefinitely; the caller explicitly closes it
-    once the decision resolves."""
+    recreated each time - and never auto-closes on a timer, since a
+    Branch (Wait) poll can run indefinitely; the caller explicitly closes
+    it once the branch resolves."""
 
     def __init__(self, screen_rect, reference_path):
         x, y, w, h = screen_rect
@@ -252,19 +253,19 @@ class LiveReferenceOverlay(_PassiveOverlay):
         # it - the region can be a handful of pixels tall (see the real
         # profile this feature was built against: 8x15), too small to fit
         # readable text inside. The overlay is also widened to at least
-        # _DECISION_OVERLAY_MIN_LABEL_WIDTH for the same reason (that same
+        # _BRANCH_OVERLAY_MIN_LABEL_WIDTH for the same reason (that same
         # profile's region is only 8px wide) - expanded symmetrically so
         # the pixmap still lines up with the real region on screen, only
         # the label strip actually needs the extra width.
-        overlay_width = max(w, _DECISION_OVERLAY_MIN_LABEL_WIDTH)
+        overlay_width = max(w, _BRANCH_OVERLAY_MIN_LABEL_WIDTH)
         left_pad = (overlay_width - w) // 2
         super(LiveReferenceOverlay, self).__init__(
-            (x - left_pad, y - _DECISION_OVERLAY_LABEL_HEIGHT,
-             overlay_width, h + _DECISION_OVERLAY_LABEL_HEIGHT),
+            (x - left_pad, y - _BRANCH_OVERLAY_LABEL_HEIGHT,
+             overlay_width, h + _BRANCH_OVERLAY_LABEL_HEIGHT),
             duration_ms=None,
         )
         self._pixmap = QtGui.QPixmap(reference_path)
-        self._region_rect = QtCore.QRect(left_pad, _DECISION_OVERLAY_LABEL_HEIGHT, w, h)
+        self._region_rect = QtCore.QRect(left_pad, _BRANCH_OVERLAY_LABEL_HEIGHT, w, h)
         self._score = 0.0
         self._threshold = 1.0
 
@@ -285,7 +286,7 @@ class LiveReferenceOverlay(_PassiveOverlay):
         painter.setPen(QtGui.QPen(border_color, 2))
         painter.drawRect(self._region_rect.adjusted(0, 0, -1, -1))
 
-        label_rect = QtCore.QRect(0, 0, self.width(), _DECISION_OVERLAY_LABEL_HEIGHT)
+        label_rect = QtCore.QRect(0, 0, self.width(), _BRANCH_OVERLAY_LABEL_HEIGHT)
         painter.fillRect(label_rect, QtGui.QColor(0, 0, 0, 190))
         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
         painter.setFont(_overlay_label_font())

@@ -1,8 +1,8 @@
 """The web UI's overlay-picking/preview logic: same three operations the
 old NodeGraphQt desktop app had wired directly to a node's Qt widgets
 (pick a click region by dragging over the live target window, briefly show
-an Action node's saved click region, briefly show a Decision node's
-reference image at its saved region) - reworked into bridge-callable
+an Action node's saved click region, briefly show a Branch/Branch (Wait)
+node's reference image at its saved region) - reworked into bridge-callable
 methods that return a plain dict instead.
 
 pick_click_region() is the one operation that needs a result back (the

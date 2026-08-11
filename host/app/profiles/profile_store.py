@@ -28,7 +28,7 @@ def save(profile_dir, profile_name, session_data, target_window_title='',
         # Only ever a narrowing hint for when target_executable alone is
         # ambiguous (zero or multiple matching windows open) - never the
         # primary identifier. Per-profile, not a global constant - a
-        # graph's click/decision regions are meaningless against a
+        # graph's click/branch regions are meaningless against a
         # different window's layout, so the target window info travels
         # with the profile.
         'target_window_title': target_window_title,

@@ -1,14 +1,17 @@
-"""Pure port/connection-rewiring algorithm for DecisionNode's OR-matched
-image list.
+"""Pure port/connection-rewiring algorithm for Branch/Branch (Wait)'s
+OR-matched image list.
 
 Phase 1 of the PyQt5/NodeGraphQt -> web UI migration (see the approved
-migration plan): relocated from the dict-manipulation half of
-DecisionNode._sync_output_ports() so it can be unit-tested for the first
-time, independent of any NodeGraphQt object (the values in the
-connections dicts can be anything - Port objects today, plain node-id/
-port-name dicts once the web UI owns graph state instead of NodeGraphQt -
-this function only ever moves list entries between dict keys, never
-inspects them).
+migration plan): relocated from the dict-manipulation half of the old
+NodeGraphQt desktop app's DecisionNode._sync_output_ports() so it can be
+unit-tested for the first time, independent of any NodeGraphQt object
+(the values in the connections dicts can be anything - Port objects
+today, plain node-id/port-name dicts once the web UI owns graph state
+instead of NodeGraphQt - this function only ever moves list entries
+between dict keys, never inspects them). Decision was later split into
+Branch/Branch (Wait) - this file (originally decision_images.py) is
+shared unmodified by both, since the algorithm itself never depended on
+which of the two a node ended up being.
 """
 
 

@@ -11,11 +11,11 @@ ProfileError, return {'ok': False, 'error': str(exc)} instead of raising,
 since there's no QMessageBox on this side of the bridge - the frontend
 renders the error itself (see index.html's showError()).
 
-Phase 5 adds Decision-node image handling: add_decision_image() does the
-same native-file-dialog + process_masked_reference() + copy-into-images/
-sequence as the old NodeGraphQt desktop app's Decision node editor, and
-rewire_decision_ports() is a thin pass-through to
-decision_images.rewire_ports_after_image_change() (Phase 1, already
+Phase 5 adds Branch/Branch (Wait) image handling: add_branch_image() does
+the same native-file-dialog + process_masked_reference() + copy-into-
+images/ sequence as the old NodeGraphQt desktop app's Decision node
+editor, and rewire_branch_ports() is a thin pass-through to
+branch_images.rewire_ports_after_image_change() (Phase 1, already
 unit-tested) - reused as-is rather than re-implemented in untested JS,
 since graph_editor.js owns *when* to rewire (add/delete/move) but not the
 rewiring algorithm itself.
@@ -48,7 +48,7 @@ import webview
 
 from app.graph.nodes.reference_processing import MaskDetectionError, process_masked_reference
 from app.profiles.profile_manager import ProfileError
-from app import decision_images, graph_translation
+from app import branch_images, graph_translation
 
 
 class WebBridge:
@@ -166,7 +166,7 @@ class WebBridge:
         profile images live under profiles/<name>/images/, a completely
         different tree), so the actual bytes have to cross the bridge
         instead of just a path. Every cropped reference image is written as
-        a PNG by add_decision_image() (cv2.imwrite(..., '..._cropped.png')),
+        a PNG by add_branch_image() (cv2.imwrite(..., '..._cropped.png')),
         so the mime type is always image/png."""
         with open(abs_path, 'rb') as image_file:
             encoded = base64.b64encode(image_file.read()).decode('ascii')
@@ -186,7 +186,7 @@ class WebBridge:
         except ProfileError as exc:
             return {'ok': False, 'error': str(exc)}
 
-    def add_decision_image(self, profile_name, node_id):
+    def add_branch_image(self, profile_name, node_id):
         """Native file-pick + mask-process + copy-into-images/, mirroring
         the old NodeGraphQt desktop app's Decision node add-image handler
         exactly except for the filename stem: the old code used the node's
@@ -200,7 +200,7 @@ class WebBridge:
             return {'ok': False, 'error': f"Profile '{profile_name}' does not exist."}
 
         chosen = webview.windows[0].create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             file_types=('Images (*.png;*.jpg;*.jpeg;*.bmp)',),
         )
         if not chosen:
@@ -233,8 +233,8 @@ class WebBridge:
             'thumbnail_url': self._thumbnail_data_uri(self._abs_image_path(profile_name, reference_path)),
         }
 
-    def rewire_decision_ports(self, connections_before, position_mapping, num_images):
-        """Thin pass-through to decision_images.rewire_ports_after_image_change()
+    def rewire_branch_ports(self, connections_before, position_mapping, num_images):
+        """Thin pass-through to branch_images.rewire_ports_after_image_change()
         (Phase 1, already unit-tested) - graph_editor.js computes the
         position_mapping for whichever operation (add/delete/move) just
         happened, the same way the old NodeGraphQt desktop app's Decision
@@ -254,7 +254,7 @@ class WebBridge:
         actually introduced the mismatch, keeps the already-tested pure
         function's int-keyed contract untouched."""
         int_keyed_mapping = {int(key): value for key, value in position_mapping.items()}
-        return decision_images.rewire_ports_after_image_change(
+        return branch_images.rewire_ports_after_image_change(
             connections_before, int_keyed_mapping, num_images,
         )
 

@@ -1,7 +1,9 @@
-"""Run/Stop + confirmation-mode/decision-live-match overlay lifecycle,
+"""Run/Stop + confirmation-mode/branch-live-match overlay lifecycle,
 originally extracted from the old NodeGraphQt desktop app's MainWindow's
 _start_macro/_stop_macro/_show_pending_*/_show_decision_overlay* methods
-(that desktop app is gone now - this is the only Run/Stop implementation).
+(renamed here to _show_branch_overlay*, matching the Decision -> Branch/
+Branch (Wait) node-type split) - that desktop app is gone now, this is
+the only Run/Stop implementation.
 
 Constructor dependencies (resolve_target_window/window_capture_factory/
 macro_runner_factory/command_sink_factory) default to the real engine
@@ -12,8 +14,8 @@ exercise every branch of start()/stop()/confirm() without a real HID
 device, target window, or screen capture.
 
 A QObject (not a plain class) purely for its signals: MacroRunner's four
-callbacks (show_pending_click/show_pending_key_press/show_decision_overlay/
-hide_decision_overlay) fire on its own background thread, and constructing
+callbacks (show_pending_click/show_pending_key_press/show_branch_overlay/
+hide_branch_overlay) fire on its own background thread, and constructing
 or mutating a QWidget off the GUI thread is unsafe - Qt's automatic queued
 connection (the same cross-thread marshalling host/app/hid_link.py's
 HidLink already relies on) is what actually moves the overlay-widget work
@@ -55,8 +57,8 @@ _CONFIRMATION_HIGHLIGHT_DURATION_MS = 3600_000
 class RunController(QtCore.QObject):
     _pending_click_signal = QtCore.pyqtSignal(tuple)
     _pending_key_press_signal = QtCore.pyqtSignal(str, object)
-    _decision_overlay_signal = QtCore.pyqtSignal(dict)
-    _decision_overlay_hide_signal = QtCore.pyqtSignal()
+    _branch_overlay_signal = QtCore.pyqtSignal(dict)
+    _branch_overlay_hide_signal = QtCore.pyqtSignal()
     _clear_pending_signal = QtCore.pyqtSignal()
 
     def __init__(self, hid_link,
@@ -76,13 +78,13 @@ class RunController(QtCore.QObject):
         self.pending_status = None
         self.last_error = None
         self._pending_confirmation_overlay = None
-        self._decision_overlay = None
-        self._decision_overlay_key = None
+        self._branch_overlay = None
+        self._branch_overlay_key = None
 
         self._pending_click_signal.connect(self._show_pending_click_on_gui_thread)
         self._pending_key_press_signal.connect(self._show_pending_key_press_on_gui_thread)
-        self._decision_overlay_signal.connect(self._show_decision_overlay_on_gui_thread)
-        self._decision_overlay_hide_signal.connect(self._hide_decision_overlay_on_gui_thread)
+        self._branch_overlay_signal.connect(self._show_branch_overlay_on_gui_thread)
+        self._branch_overlay_hide_signal.connect(self._hide_branch_overlay_on_gui_thread)
         self._clear_pending_signal.connect(self._clear_pending_indicator)
 
     @property
@@ -114,7 +116,7 @@ class RunController(QtCore.QObject):
                 self._capture.stop()
                 self._capture = None
             self._clear_pending_signal.emit()
-            self._decision_overlay_hide_signal.emit()
+            self._branch_overlay_hide_signal.emit()
 
     def start(self, engine_graph, target_executable, target_window_title,
               profile_dir, focus_policy, confirmation_mode):
@@ -159,8 +161,8 @@ class RunController(QtCore.QObject):
             focus_policy=focus_policy, confirmation_mode=confirmation_mode,
             show_pending_click=self._show_pending_click,
             show_pending_key_press=self._show_pending_key_press,
-            show_decision_overlay=self._show_decision_overlay,
-            hide_decision_overlay=self._hide_decision_overlay,
+            show_branch_overlay=self._show_branch_overlay,
+            hide_branch_overlay=self._hide_branch_overlay,
         )
         self.macro_runner.start()
         return {'ok': True}
@@ -186,7 +188,7 @@ class RunController(QtCore.QObject):
             self._capture.stop()
             self._capture = None
         self._clear_pending_signal.emit()
-        self._decision_overlay_hide_signal.emit()
+        self._branch_overlay_hide_signal.emit()
         return {'ok': True}
 
     def confirm(self):
@@ -232,33 +234,33 @@ class RunController(QtCore.QObject):
             self._pending_confirmation_overlay = PendingKeyPressOverlay(screen_pos, key_combo)
             self._pending_confirmation_overlay.show()
 
-    def _show_decision_overlay(self, details):
-        self._decision_overlay_signal.emit(details)
+    def _show_branch_overlay(self, details):
+        self._branch_overlay_signal.emit(details)
 
-    def _show_decision_overlay_on_gui_thread(self, details):
-        # A multi-image Decision node can show a different reference/region
-        # from one poll to the next (whichever image is currently the best
-        # match candidate - see engine/runner.py's _run_decision()) -
-        # recreate the overlay whenever they change instead of reusing a
-        # stale region/pixmap.
+    def _show_branch_overlay_on_gui_thread(self, details):
+        # A multi-image Branch/Branch (Wait) node can show a different
+        # reference/region from one poll to the next (whichever image is
+        # currently the best match candidate - see engine/runner.py's
+        # _make_branch_helpers()) - recreate the overlay whenever they
+        # change instead of reusing a stale region/pixmap.
         overlay_key = (details['screen_rect'], details['reference_path'])
-        if self._decision_overlay is not None and overlay_key != self._decision_overlay_key:
-            self._decision_overlay.close()
-            self._decision_overlay = None
+        if self._branch_overlay is not None and overlay_key != self._branch_overlay_key:
+            self._branch_overlay.close()
+            self._branch_overlay = None
 
-        if self._decision_overlay is None:
-            self._decision_overlay = LiveReferenceOverlay(
+        if self._branch_overlay is None:
+            self._branch_overlay = LiveReferenceOverlay(
                 details['screen_rect'], details['reference_path'],
             )
-            self._decision_overlay_key = overlay_key
-            self._decision_overlay.show()
-        self._decision_overlay.update_score(details['score'], details['threshold'])
+            self._branch_overlay_key = overlay_key
+            self._branch_overlay.show()
+        self._branch_overlay.update_score(details['score'], details['threshold'])
 
-    def _hide_decision_overlay(self):
-        self._decision_overlay_hide_signal.emit()
+    def _hide_branch_overlay(self):
+        self._branch_overlay_hide_signal.emit()
 
-    def _hide_decision_overlay_on_gui_thread(self):
-        if self._decision_overlay is not None:
-            self._decision_overlay.close()
-            self._decision_overlay = None
-            self._decision_overlay_key = None
+    def _hide_branch_overlay_on_gui_thread(self):
+        if self._branch_overlay is not None:
+            self._branch_overlay.close()
+            self._branch_overlay = None
+            self._branch_overlay_key = None

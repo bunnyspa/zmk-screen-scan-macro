@@ -3,7 +3,7 @@ real ProfileManager on a tmp_path root, with no pywebview/Qt involved at
 all (WebBridge itself has no such dependency; only host/main.py,
 which actually launches a window, does).
 
-Phase 5's add_decision_image() is the one method that does need `webview`
+Phase 5's add_branch_image() is the one method that does need `webview`
 (its native file-open dialog) - faked here with a plain stand-in object
 rather than mocking pywebview itself, since only `windows[0].create_file_dialog()`'s
 return value matters to this method.
@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 import webui.bridge as bridge_module
-from app import decision_images
+from app import branch_images
 from app.profiles.profile_manager import ProfileManager
 from webui.bridge import WebBridge
 
@@ -279,27 +279,27 @@ def test_delete_profile_leaves_current_profile_name_alone_if_a_different_profile
     assert bridge._current_profile_name == 'A'
 
 
-def test_add_decision_image_missing_profile_returns_error(bridge):
-    result = bridge.add_decision_image('Nope', 'node-1')
+def test_add_branch_image_missing_profile_returns_error(bridge):
+    result = bridge.add_branch_image('Nope', 'node-1')
     assert result['ok'] is False
 
 
-def test_add_decision_image_cancelled_dialog_returns_cancelled(bridge, monkeypatch, tmp_path):
+def test_add_branch_image_cancelled_dialog_returns_cancelled(bridge, monkeypatch, tmp_path):
     bridge.create_profile('Test')
     monkeypatch.setattr(bridge_module.webview, 'windows', [FakeWindow(None)])
 
-    result = bridge.add_decision_image('Test', 'node-1')
+    result = bridge.add_branch_image('Test', 'node-1')
 
     assert result == {'ok': False, 'cancelled': True}
 
 
-def test_add_decision_image_success_copies_files_and_returns_image(bridge, monkeypatch, tmp_path):
+def test_add_branch_image_success_copies_files_and_returns_image(bridge, monkeypatch, tmp_path):
     bridge.create_profile('Test')
     src_path = tmp_path / 'source.png'
     _write_reference_image(src_path)
     monkeypatch.setattr(bridge_module.webview, 'windows', [FakeWindow([str(src_path)])])
 
-    result = bridge.add_decision_image('Test', 'node-1')
+    result = bridge.add_branch_image('Test', 'node-1')
 
     assert result['ok'] is True
     image = result['image']
@@ -311,37 +311,37 @@ def test_add_decision_image_success_copies_files_and_returns_image(bridge, monke
     assert result['thumbnail_url'].startswith('data:image/png;base64,')
 
 
-def test_add_decision_image_unmaskable_source_returns_error(bridge, monkeypatch, tmp_path):
+def test_add_branch_image_unmaskable_source_returns_error(bridge, monkeypatch, tmp_path):
     bridge.create_profile('Test')
     src_path = tmp_path / 'all_transparent.png'
     cv2.imwrite(str(src_path), np.zeros((4, 4, 4), dtype=np.uint8))  # alpha=0 everywhere - no comparison pixels
     monkeypatch.setattr(bridge_module.webview, 'windows', [FakeWindow([str(src_path)])])
 
-    result = bridge.add_decision_image('Test', 'node-1')
+    result = bridge.add_branch_image('Test', 'node-1')
 
     assert result['ok'] is False
     assert 'error' in result
 
 
-def test_rewire_decision_ports_matches_the_underlying_pure_function(bridge):
+def test_rewire_branch_ports_matches_the_underlying_pure_function(bridge):
     connections_before = {'1': [{'node': 'a'}], '2': [], 'false': [{'node': 'b'}]}
     position_mapping = {'0': 1, '1': 0}  # string keys, exactly as pywebview's JS->Python JSON bridge delivers them
 
-    result = bridge.rewire_decision_ports(connections_before, position_mapping, 2)
+    result = bridge.rewire_branch_ports(connections_before, position_mapping, 2)
 
-    assert result == decision_images.rewire_ports_after_image_change(
+    assert result == branch_images.rewire_ports_after_image_change(
         connections_before, {0: 1, 1: 0}, 2,  # the pure function's own contract is int-keyed
     )
 
 
-def test_rewire_decision_ports_string_keys_actually_carry_connections(bridge):
+def test_rewire_branch_ports_string_keys_actually_carry_connections(bridge):
     # Regression test: position_mapping arriving with string keys (as it
     # always does over the real bridge - see the method's docstring) must
     # not silently drop every connection. A swap should still swap, not wipe.
     connections_before = {'1': [{'node': 'a'}], '2': [{'node': 'b'}], 'false': []}
     position_mapping = {'0': 1, '1': 0}
 
-    result = bridge.rewire_decision_ports(connections_before, position_mapping, 2)
+    result = bridge.rewire_branch_ports(connections_before, position_mapping, 2)
 
     assert result == {'1': [{'node': 'b'}], '2': [{'node': 'a'}], 'false': []}
 

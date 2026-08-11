@@ -581,7 +581,7 @@ def test_branch_wait_shows_overlay_each_poll_without_blocking(tmp_path, monkeypa
     capture = FakeCapture([nonmatching, nonmatching, matching])
     runner = MacroRunner(
         graph, capture, sink, hwnd=1234, profile_dir=tmp_path,
-        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        show_branch_overlay=shown.append, hide_branch_overlay=lambda: hidden.append(True),
         is_window_focused=lambda hwnd: True,
     )
     runner.start()
@@ -604,7 +604,7 @@ def test_branch_mode_shows_no_overlay_without_confirmation_mode(tmp_path, monkey
     sink = RecordingCommandSink()
     runner = MacroRunner(
         graph, FakeCapture([nonmatching]), sink, hwnd=1234, profile_dir=tmp_path,
-        show_decision_overlay=shown.append,
+        show_branch_overlay=shown.append,
     )
     runner.start()
     time.sleep(0.05)
@@ -624,7 +624,7 @@ def test_branch_mode_with_confirmation_mode_shows_overlay_and_waits_for_confirm(
     runner = MacroRunner(
         graph, FakeCapture([nonmatching]), sink, hwnd=1234, profile_dir=tmp_path,
         confirmation_mode=True, confirmation_poll_interval_ms=10,
-        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        show_branch_overlay=shown.append, hide_branch_overlay=lambda: hidden.append(True),
         is_window_focused=lambda hwnd: True,
     )
     runner.start()
@@ -634,10 +634,10 @@ def test_branch_mode_with_confirmation_mode_shows_overlay_and_waits_for_confirm(
     assert not sink.sent  # blocked waiting for confirmation
     assert not hidden
 
-    runner.confirm()  # resolves the decision's own confirmation gate
+    runner.confirm()  # resolves the branch's own confirmation gate
     time.sleep(0.05)
 
-    assert hidden  # decision overlay cleared once its confirmation resolved
+    assert hidden  # branch overlay cleared once its confirmation resolved
     assert not sink.sent  # confirmation_mode also gates the following action
 
     runner.confirm()  # resolves the subsequent key_press action's gate
@@ -659,7 +659,7 @@ def test_branch_wait_with_confirmation_mode_waits_for_confirm_after_match(tmp_pa
     runner = MacroRunner(
         graph, capture, sink, hwnd=1234, profile_dir=tmp_path,
         confirmation_mode=True, confirmation_poll_interval_ms=10,
-        show_decision_overlay=shown.append, hide_decision_overlay=lambda: hidden.append(True),
+        show_branch_overlay=shown.append, hide_branch_overlay=lambda: hidden.append(True),
         is_window_focused=lambda hwnd: True,
     )
     runner.start()
@@ -669,10 +669,10 @@ def test_branch_wait_with_confirmation_mode_waits_for_confirm_after_match(tmp_pa
     assert not sink.sent  # matched, but blocked waiting for confirmation
     assert not hidden
 
-    runner.confirm()  # resolves the decision's own confirmation gate
+    runner.confirm()  # resolves the branch's own confirmation gate
     time.sleep(0.05)
 
-    assert hidden  # decision overlay cleared once its confirmation resolved
+    assert hidden  # branch overlay cleared once its confirmation resolved
     assert not sink.sent  # confirmation_mode also gates the following action
 
     runner.confirm()  # resolves the subsequent key_press action's gate

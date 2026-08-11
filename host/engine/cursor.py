@@ -9,15 +9,16 @@ consistent end to end, so clicks land correctly. Using the client-area
 origin here instead was a real, confirmed bug: every click landed shifted
 down and right by the title bar height and border width.
 
-NOTE: Decision-node region coordinates are NOT in this same convention -
-confirmed against real hardware that WindowsCapture (engine/window_capture.py)
-produces frames sized to DWM's extended frame bounds (DWMWA_EXTENDED_FRAME_BOUNDS),
-which is smaller than GetWindowRect() by an invisible resize-border margin
-(~7-8px per side on Windows 10/11). A Decision node's region_x/y/w/h are
-measured directly within the reference image the user uploaded, so they
-already match WindowsCapture's convention - engine/matcher.py's per-frame
+NOTE: Branch/Branch (Wait) node region coordinates are NOT in this same
+convention - confirmed against real hardware that WindowsCapture
+(engine/window_capture.py) produces frames sized to DWM's extended frame
+bounds (DWMWA_EXTENDED_FRAME_BOUNDS), which is smaller than
+GetWindowRect() by an invisible resize-border margin (~7-8px per side on
+Windows 10/11). A Branch/Branch (Wait) node's region_x/y/w/h are measured
+directly within the reference image the user uploaded, so they already
+match WindowsCapture's convention - engine/matcher.py's per-frame
 cropping is correct without any adjustment. Only app/pick_controller.py's
-"Show Region" preview for Decision nodes needed to switch to
+"Show Region" preview for these nodes needed to switch to
 get_window_extended_frame_bounds() instead of get_window_rect() - see its
 own comment for the bug this fixed.
 
@@ -203,9 +204,10 @@ def get_window_screen_origin(hwnd) -> tuple[int, int]:
     the title bar height and border width - confirmed against real
     hardware as the actual cause of a consistently-offset click.
 
-    NOTE: this is NOT the same origin Decision-node region coordinates
-    use - see get_window_extended_frame_origin() below. Confirmed by a
-    real ~7px "Show Region" preview offset that this distinction fixed."""
+    NOTE: this is NOT the same origin Branch/Branch (Wait) node region
+    coordinates use - see get_window_extended_frame_origin() below.
+    Confirmed by a real ~7px "Show Region" preview offset that this
+    distinction fixed."""
     rect = get_window_rect_by_hwnd(hwnd)
     return (rect[0], rect[1]) if rect is not None else (0, 0)
 
@@ -214,16 +216,16 @@ def get_window_extended_frame_origin(hwnd) -> tuple[int, int]:
     """Screen-space coordinates of the window's visible top-left corner -
     DWM's extended frame bounds, which exclude the invisible resize-border
     margin get_window_screen_origin() includes (confirmed ~7-8px per side
-    on Windows 10/11). This is the convention Decision-node region_x/y are
-    in: process_masked_reference() measures them within whatever image the
-    user uploaded, and WindowsCapture (this app's own live-capture library)
-    was confirmed against real hardware to produce frames sized to this
-    same extended-frame-bounds convention, not get_window_screen_origin()'s
-    outer-frame one.
+    on Windows 10/11). This is the convention Branch/Branch (Wait) node
+    region_x/y are in: process_masked_reference() measures them within
+    whatever image the user uploaded, and WindowsCapture (this app's own
+    live-capture library) was confirmed against real hardware to produce
+    frames sized to this same extended-frame-bounds convention, not
+    get_window_screen_origin()'s outer-frame one.
 
     Falls back to get_window_screen_origin() if DWM composition is
-    unavailable, rather than raising - a live run's decision-overlay
-    display is a nice-to-have, not worth crashing the match logic over."""
+    unavailable, rather than raising - a live run's branch-overlay display
+    is a nice-to-have, not worth crashing the match logic over."""
     rect = get_extended_frame_bounds_by_hwnd(hwnd)
     if rect is None:
         return get_window_screen_origin(hwnd)

@@ -106,7 +106,7 @@ class MacroRunner:
                  confirmation_mode: bool = False,
                  show_pending_click=None, show_pending_key_press=None,
                  confirmation_poll_interval_ms: int = DEFAULT_CONFIRMATION_POLL_INTERVAL_MS,
-                 show_decision_overlay=None, hide_decision_overlay=None):
+                 show_branch_overlay=None, hide_branch_overlay=None):
         self._graph = graph
         self._capture = capture
         self._sink = sink
@@ -137,11 +137,11 @@ class MacroRunner:
         # percentage) - shown during branch_wait polling (regardless of
         # confirmation mode) and/or right before a branch/branch_wait
         # resolves in confirmation mode (both types, per the design
-        # discussion this came from) - see _make_decision_helpers().
+        # discussion this came from) - see _make_branch_helpers().
         # Injected the same way as show_pending_click/
         # show_pending_key_press, for the same reason (UI-thread work).
-        self._show_decision_overlay = show_decision_overlay
-        self._hide_decision_overlay = hide_decision_overlay
+        self._show_branch_overlay = show_branch_overlay
+        self._hide_branch_overlay = hide_branch_overlay
         self._confirmation_event = threading.Event()
         self._stop_requested = threading.Event()
         self._thread: threading.Thread | None = None
@@ -325,7 +325,7 @@ class MacroRunner:
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
-    def _make_decision_helpers(self, node: dict, threshold: float, show_overlay: bool):
+    def _make_branch_helpers(self, node: dict, threshold: float, show_overlay: bool):
         """Shared setup for _run_branch()/_run_branch_wait(): loads every
         image the node lists (fresh, not cached across polls within one
         _run_branch_wait() call, same as the old single-image behavior -
@@ -340,7 +340,7 @@ class MacroRunner:
         to watch update over time). With multiple images, whichever one
         is currently the best-scoring candidate is shown (the eventual
         match isn't known until it crosses threshold) - the caller
-        (run_controller.py's _show_decision_overlay_on_gui_thread)
+        (run_controller.py's _show_branch_overlay_on_gui_thread)
         recreates the overlay whenever the shown region/reference
         changes between polls."""
         images = [
@@ -375,11 +375,11 @@ class MacroRunner:
             return None, best_img, best_score
 
         def update_overlay(display_img, score):
-            if display_img is None or origin is None or self._show_decision_overlay is None:
+            if display_img is None or origin is None or self._show_branch_overlay is None:
                 return
             origin_x, origin_y = origin
             rx, ry, rw, rh = display_img["region"]
-            self._show_decision_overlay({
+            self._show_branch_overlay({
                 "screen_rect": (origin_x + rx, origin_y + ry, rw, rh),
                 "reference_path": str(self._profile_dir / display_img["reference_path"]),
                 "score": score,
@@ -387,8 +387,8 @@ class MacroRunner:
             })
 
         def clear_overlay():
-            if show_overlay and self._hide_decision_overlay is not None:
-                self._hide_decision_overlay()
+            if show_overlay and self._hide_branch_overlay is not None:
+                self._hide_branch_overlay()
 
         return evaluate, update_overlay, clear_overlay
 
@@ -396,14 +396,14 @@ class MacroRunner:
         """Evaluates every image once; returns the first matching image's
         own "out" target, or node["false"] if none matched."""
         threshold = node["match_threshold"]
-        evaluate, update_overlay, clear_overlay = self._make_decision_helpers(
+        evaluate, update_overlay, clear_overlay = self._make_branch_helpers(
             node, threshold, show_overlay=self._confirmation_mode,
         )
         frame = self._capture.get_latest_frame_bgr()
         matched_img, display_img, score = evaluate(frame)
         update_overlay(display_img, score)
         if self._confirmation_mode:
-            self._await_confirmation("decision", {})
+            self._await_confirmation("branch", {})
         clear_overlay()
         return matched_img["out"] if matched_img is not None else node["false"]
 
@@ -414,7 +414,7 @@ class MacroRunner:
         waiting is the only other way out (returns None, same dead-end
         handling _run_loop() already gives any null port)."""
         threshold = node["match_threshold"]
-        evaluate, update_overlay, clear_overlay = self._make_decision_helpers(
+        evaluate, update_overlay, clear_overlay = self._make_branch_helpers(
             node, threshold, show_overlay=True,
         )
         poll_interval = node.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_MS) / 1000.0
@@ -424,7 +424,7 @@ class MacroRunner:
             update_overlay(display_img, score)
             if matched_img is not None:
                 if self._confirmation_mode:
-                    self._await_confirmation("decision", {})
+                    self._await_confirmation("branch", {})
                 clear_overlay()
                 return matched_img["out"]
             self._stop_requested.wait(timeout=poll_interval)

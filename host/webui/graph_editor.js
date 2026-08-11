@@ -20,7 +20,7 @@
  * Branch/Branch (Wait)'s `images` list and per-image output ports
  * ("1".."N", + "false" for Branch only) need real bridge round-trips:
  * image upload/masking is OpenCV work that only exists in Python, and the
- * port-rewiring algorithm on add/delete/move is decision_images.py -
+ * port-rewiring algorithm on add/delete/move is branch_images.py -
  * already unit-tested in Python, so it's called through the bridge
  * rather than re-implemented untested here. The image-management UI is a
  * single shared modal (#image-editor-modal in index.html), repointed at
@@ -653,7 +653,7 @@ function currentBranchConnections(nodeId) {
 // Rebuilds every output port from scratch (mirrors the old
 // DecisionNode._sync_output_ports()'s "recompute from scratch is simpler
 // than incremental rename/reconnect" approach) from newConnections (as
-// returned by decision_images.rewire_ports_after_image_change() via the
+// returned by branch_images.rewire_ports_after_image_change() via the
 // bridge). includeFalsePort is a property of the node's *type* (true for
 // 'branch', false for 'branch_wait'), not a per-instance toggle - see
 // module docstring. Removing "output_1" existingCount times is deliberate,
@@ -686,12 +686,12 @@ function rebuildBranchOutputPorts(nodeId, newConnections, numImages, includeFals
 // Shared by add/delete/move: apply a new images[] + the position_mapping
 // that describes it (same {new_index: old_index_or_null} shape the old
 // NodeGraphQt desktop app's add/delete/move-image handlers built), via
-// decision_images.rewire_ports_after_image_change() (Python, tested)
+// branch_images.rewire_ports_after_image_change() (Python, tested)
 // through the bridge, then rebuild ports/UI to match.
 function applyBranchImagesChange(nodeId, newImages, positionMapping) {
   const includeFalsePort = editor.getNodeFromId(nodeId).name === 'branch';
   const oldConnections = currentBranchConnections(nodeId);
-  return pywebview.api.rewire_decision_ports(oldConnections, positionMapping, newImages.length).then(function (newConnections) {
+  return pywebview.api.rewire_branch_ports(oldConnections, positionMapping, newImages.length).then(function (newConnections) {
     const data = Object.assign({}, editor.getNodeFromId(nodeId).data, { images: newImages });
     editor.updateNodeDataFromId(nodeId, data);
     rebuildBranchOutputPorts(nodeId, newConnections, newImages.length, includeFalsePort);
@@ -703,7 +703,7 @@ function applyBranchImagesChange(nodeId, newImages, positionMapping) {
 
 function addBranchImageFlow() {
   const nodeId = editingBranchNodeId;
-  pywebview.api.add_decision_image(currentProfile, nodeId).then(function (result) {
+  pywebview.api.add_branch_image(currentProfile, nodeId).then(function (result) {
     if (!result.ok) {
       if (!result.cancelled) showError(result.error);
       return;

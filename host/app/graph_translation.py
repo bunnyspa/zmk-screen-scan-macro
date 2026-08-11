@@ -28,7 +28,7 @@ def _first_connected_document_node(node, port_name):
     return connections[0]['node'] if connections else None
 
 
-def _translate_decision_images(node, images):
+def _translate_branch_images(node, images):
     """Shared by the 'branch'/'branch_wait' translations below - both
     keep the exact same multi-image OR-matching shape (checked in list
     order, first match wins, each image keeps its own 'out' target),
@@ -86,7 +86,7 @@ def build_engine_graph_from_document(graph_document):
         elif node_type == 'branch':
             engine_nodes[node_id] = {
                 'type': 'branch',
-                'images': _translate_decision_images(node, properties.get('images') or []),
+                'images': _translate_branch_images(node, properties.get('images') or []),
                 'match_threshold': float(properties.get('match_threshold', 0.85)),
                 'false': _first_connected_document_node(node, 'false'),
             }
@@ -94,7 +94,7 @@ def build_engine_graph_from_document(graph_document):
         elif node_type == 'branch_wait':
             engine_nodes[node_id] = {
                 'type': 'branch_wait',
-                'images': _translate_decision_images(node, properties.get('images') or []),
+                'images': _translate_branch_images(node, properties.get('images') or []),
                 'match_threshold': float(properties.get('match_threshold', 0.85)),
                 # matches graph_editor.js's own default
                 'poll_interval_ms': int(properties.get('poll_interval_ms', 200)),
