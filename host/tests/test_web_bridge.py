@@ -171,6 +171,32 @@ def test_save_missing_profile_returns_error(bridge):
     assert result['ok'] is False
 
 
+def test_load_profile_collects_thumbnails_for_branch_and_branch_wait_nodes(bridge):
+    # _collect_image_thumbnails() filters on node type - branch and
+    # branch_wait both have an `images` list (unlike action/wait), and a
+    # node of a type it doesn't recognize should be skipped rather than
+    # crash on missing/mismatched fields.
+    bridge.create_profile('Test')
+    images_dir = bridge._profile_manager.images_dir('Test')
+    for filename in ('a.png', 'b.png'):
+        with open(os.path.join(images_dir, filename), 'wb') as f:
+            f.write(b'not a real png but just needs to exist')
+
+    graph_document = {
+        'nodes': {
+            'n1': {'type': 'branch', 'properties': {'images': [{'reference_path': 'images/a.png'}]}},
+            'n2': {'type': 'branch_wait', 'properties': {'images': [{'reference_path': 'images/b.png'}]}},
+            'n3': {'type': 'wait', 'properties': {'duration_ms': 100}},
+        },
+    }
+    bridge.save_profile('Test', graph_document, {})
+
+    result = bridge.load_profile('Test')
+
+    assert set(result['image_thumbnails'].keys()) == {'images/a.png', 'images/b.png'}
+    assert all(uri.startswith('data:image/png;base64,') for uri in result['image_thumbnails'].values())
+
+
 def test_rename_profile(bridge):
     bridge.create_profile('Old')
     result = bridge.rename_profile('Old', 'New')

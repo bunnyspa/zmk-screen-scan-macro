@@ -137,15 +137,16 @@ class WebBridge:
         }
 
     def _collect_image_thumbnails(self, name, graph):
-        """{reference_path: data: URI} for every Decision-node image in
-        `graph` - display-only, computed fresh on every load rather than
-        stored in the GraphDocument. Silently skips anything not shaped
-        like a GraphDocument decision node (e.g. an incompatible/legacy
-        graph) - graph_editor.js's own compatibility check is what actually
-        surfaces that to the user; this just must not crash on it."""
+        """{reference_path: data: URI} for every Branch/Branch (Wait) node's
+        image in `graph` - display-only, computed fresh on every load
+        rather than stored in the GraphDocument. Silently skips anything
+        not shaped like one of those two node types (e.g. an
+        incompatible/legacy graph) - graph_editor.js's own compatibility
+        check is what actually surfaces that to the user; this just must
+        not crash on it."""
         thumbnails = {}
         for node in (graph.get('nodes') or {}).values():
-            if not isinstance(node, dict) or node.get('type') != 'decision':
+            if not isinstance(node, dict) or node.get('type') not in ('branch', 'branch_wait'):
                 continue
             for image in (node.get('properties') or {}).get('images') or []:
                 relative_path = image.get('reference_path')

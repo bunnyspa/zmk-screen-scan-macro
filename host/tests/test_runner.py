@@ -110,7 +110,7 @@ def test_is_running_reflects_the_thread_actually_finishing_on_its_own():
     assert runner.is_running() is False  # ended itself at the dead end, no stop() called
 
 
-def test_decision_branch_true_and_false(tmp_path):
+def test_branch_true_and_false(tmp_path):
     content = np.full((10, 10, 3), (10, 20, 30), dtype=np.uint8)
     reference_bgra = np.dstack([content, np.full((10, 10), 255, dtype=np.uint8)])
     cv2.imwrite(str(tmp_path / "ref.png"), reference_bgra)
@@ -123,10 +123,9 @@ def test_decision_branch_true_and_false(tmp_path):
         "start_node": "d1",
         "nodes": {
             "d1": {
-                "type": "decision",
+                "type": "branch",
                 "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "true_action"}],
                 "match_threshold": 0.99,
-                "evaluation_mode": "branch",
                 "false": "false_action",
             },
             "true_action": {"type": "action", "action_type": "key_press",
@@ -147,7 +146,7 @@ def test_decision_branch_true_and_false(tmp_path):
     assert sink_false.sent[0].keycodes == (wire.keycode_for_letter("b"),)
 
 
-def test_decision_wait_until_true_polls_until_match(tmp_path):
+def test_branch_wait_polls_until_match(tmp_path):
     content = np.full((10, 10, 3), 100, dtype=np.uint8)
     reference_bgra = np.dstack([content, np.full((10, 10), 255, dtype=np.uint8)])
     cv2.imwrite(str(tmp_path / "ref.png"), reference_bgra)
@@ -160,10 +159,9 @@ def test_decision_wait_until_true_polls_until_match(tmp_path):
         "start_node": "d1",
         "nodes": {
             "d1": {
-                "type": "decision",
+                "type": "branch_wait",
                 "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "done"}],
                 "match_threshold": 0.99,
-                "evaluation_mode": "wait_until_true",
                 "poll_interval_ms": 10,
             },
             "done": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "done"},
@@ -177,11 +175,15 @@ def test_decision_wait_until_true_polls_until_match(tmp_path):
     assert sink.sent  # eventually matched and proceeded to "done"
 
 
-def _two_image_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
+def _two_image_branch_graph(tmp_path, node_type, poll_interval_ms=10):
     """Two OR'd reference images at disjoint regions - image "1" (region A,
     content 100) takes 'a_action', image "2" (region B, content 200) takes
     'b_action'. Returns (graph, content_a, content_b, region_a, region_b)
-    so callers can build frames with either/both/neither region matching."""
+    so callers can build frames with either/both/neither region matching.
+    node_type: "branch" or "branch_wait" - each only gets the field it
+    would actually have (branch: "false", never "poll_interval_ms";
+    branch_wait: the reverse), matching build_engine_graph_from_document()'s
+    real output shape rather than a generic always-both-fields fixture."""
     content_a = np.full((10, 10, 3), 100, dtype=np.uint8)
     content_b = np.full((10, 10, 3), 200, dtype=np.uint8)
     cv2.imwrite(str(tmp_path / "a.png"), np.dstack([content_a, np.full((10, 10), 255, dtype=np.uint8)]))
@@ -190,20 +192,23 @@ def _two_image_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
     region_a = [10, 10, 10, 10]
     region_b = [50, 50, 10, 10]
 
+    node = {
+        "type": node_type,
+        "images": [
+            {"reference_path": "a.png", "region": region_a, "out": "a_action"},
+            {"reference_path": "b.png", "region": region_b, "out": "b_action"},
+        ],
+        "match_threshold": 0.99,
+    }
+    if node_type == "branch":
+        node["false"] = "false_action"
+    else:
+        node["poll_interval_ms"] = poll_interval_ms
+
     graph = {
         "start_node": "d1",
         "nodes": {
-            "d1": {
-                "type": "decision",
-                "images": [
-                    {"reference_path": "a.png", "region": region_a, "out": "a_action"},
-                    {"reference_path": "b.png", "region": region_b, "out": "b_action"},
-                ],
-                "match_threshold": 0.99,
-                "evaluation_mode": evaluation_mode,
-                "poll_interval_ms": poll_interval_ms,
-                "false": "false_action",
-            },
+            "d1": node,
             "a_action": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "a_action"},
             "b_action": {"type": "action", "action_type": "key_press", "key_combo": "b", "out": "b_action"},
             "false_action": {"type": "action", "action_type": "key_press", "key_combo": "c", "out": "false_action"},
@@ -220,8 +225,8 @@ def _frame_with(content, region):
     return frame
 
 
-def test_decision_or_match_first_image_wins_when_multiple_match(tmp_path):
-    graph, content_a, content_b, region_a, region_b = _two_image_graph(tmp_path, "branch")
+def test_branch_or_match_first_image_wins_when_multiple_match(tmp_path):
+    graph, content_a, content_b, region_a, region_b = _two_image_branch_graph(tmp_path, "branch")
     frame = _frame_with(content_a, region_a)
     x, y, w, h = region_b
     frame[y:y + h, x:x + w] = content_b  # both regions now match their own reference
@@ -233,8 +238,8 @@ def test_decision_or_match_first_image_wins_when_multiple_match(tmp_path):
     assert sink.sent[0].keycodes == (wire.keycode_for_letter("a"),)  # image "1" wins the tie
 
 
-def test_decision_or_match_falls_through_to_second_image(tmp_path):
-    graph, _content_a, content_b, _region_a, region_b = _two_image_graph(tmp_path, "branch")
+def test_branch_or_match_falls_through_to_second_image(tmp_path):
+    graph, _content_a, content_b, _region_a, region_b = _two_image_branch_graph(tmp_path, "branch")
     frame = _frame_with(content_b, region_b)  # only image "2"'s region matches
 
     sink = RecordingCommandSink()
@@ -244,8 +249,8 @@ def test_decision_or_match_falls_through_to_second_image(tmp_path):
     assert sink.sent[0].keycodes == (wire.keycode_for_letter("b"),)
 
 
-def test_decision_or_match_takes_false_when_no_image_matches(tmp_path):
-    graph, _content_a, _content_b, _region_a, _region_b = _two_image_graph(tmp_path, "branch")
+def test_branch_or_match_takes_false_when_no_image_matches(tmp_path):
+    graph, _content_a, _content_b, _region_a, _region_b = _two_image_branch_graph(tmp_path, "branch")
     frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
     sink = RecordingCommandSink()
@@ -255,8 +260,8 @@ def test_decision_or_match_takes_false_when_no_image_matches(tmp_path):
     assert sink.sent[0].keycodes == (wire.keycode_for_letter("c"),)
 
 
-def test_decision_or_match_wait_until_true_takes_whichever_image_matches_first(tmp_path):
-    graph, _content_a, content_b, _region_a, region_b = _two_image_graph(tmp_path, "wait_until_true")
+def test_branch_wait_or_match_takes_whichever_image_matches_first(tmp_path):
+    graph, _content_a, content_b, _region_a, region_b = _two_image_branch_graph(tmp_path, "branch_wait")
     nonmatching = np.zeros((100, 100, 3), dtype=np.uint8)
     matching_b = _frame_with(content_b, region_b)  # image "1" never matches, only "2" does
 
@@ -535,7 +540,9 @@ def test_confirmation_mode_stop_while_waiting_sends_no_action():
     assert not sink.sent
 
 
-def _decision_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
+def _branch_graph(tmp_path, node_type, poll_interval_ms=10):
+    """node_type: "branch" or "branch_wait" - see _two_image_branch_graph()'s
+    docstring for why each only gets the field it would actually have."""
     content = np.full((10, 10, 3), 100, dtype=np.uint8)
     reference_bgra = np.dstack([content, np.full((10, 10), 255, dtype=np.uint8)])
     cv2.imwrite(str(tmp_path / "ref.png"), reference_bgra)
@@ -544,26 +551,29 @@ def _decision_graph(tmp_path, evaluation_mode, poll_interval_ms=10):
     matching = np.zeros((100, 100, 3), dtype=np.uint8)
     matching[10:20, 10:20] = content
 
+    node = {
+        "type": node_type,
+        "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "done"}],
+        "match_threshold": 0.99,
+    }
+    if node_type == "branch":
+        node["false"] = "done"
+    else:
+        node["poll_interval_ms"] = poll_interval_ms
+
     graph = {
         "start_node": "d1",
         "nodes": {
-            "d1": {
-                "type": "decision",
-                "images": [{"reference_path": "ref.png", "region": [10, 10, 10, 10], "out": "done"}],
-                "match_threshold": 0.99,
-                "evaluation_mode": evaluation_mode,
-                "poll_interval_ms": poll_interval_ms,
-                "false": "done",
-            },
+            "d1": node,
             "done": {"type": "action", "action_type": "key_press", "key_combo": "a", "out": "done"},
         },
     }
     return graph, nonmatching, matching
 
 
-def test_wait_until_true_shows_overlay_each_poll_without_blocking(tmp_path, monkeypatch):
+def test_branch_wait_shows_overlay_each_poll_without_blocking(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
-    graph, nonmatching, matching = _decision_graph(tmp_path, "wait_until_true")
+    graph, nonmatching, matching = _branch_graph(tmp_path, "branch_wait")
 
     shown = []
     hidden = []
@@ -588,7 +598,7 @@ def test_wait_until_true_shows_overlay_each_poll_without_blocking(tmp_path, monk
 
 def test_branch_mode_shows_no_overlay_without_confirmation_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
-    graph, nonmatching, _matching = _decision_graph(tmp_path, "branch")
+    graph, nonmatching, _matching = _branch_graph(tmp_path, "branch")
 
     shown = []
     sink = RecordingCommandSink()
@@ -606,7 +616,7 @@ def test_branch_mode_shows_no_overlay_without_confirmation_mode(tmp_path, monkey
 
 def test_branch_mode_with_confirmation_mode_shows_overlay_and_waits_for_confirm(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
-    graph, nonmatching, _matching = _decision_graph(tmp_path, "branch")
+    graph, nonmatching, _matching = _branch_graph(tmp_path, "branch")
 
     shown = []
     hidden = []
@@ -638,9 +648,9 @@ def test_branch_mode_with_confirmation_mode_shows_overlay_and_waits_for_confirm(
     assert sink.sent  # proceeded once both gates were confirmed
 
 
-def test_wait_until_true_with_confirmation_mode_waits_for_confirm_after_match(tmp_path, monkeypatch):
+def test_branch_wait_with_confirmation_mode_waits_for_confirm_after_match(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_module, "get_window_extended_frame_origin", lambda hwnd: (100, 100))
-    graph, nonmatching, matching = _decision_graph(tmp_path, "wait_until_true")
+    graph, nonmatching, matching = _branch_graph(tmp_path, "branch_wait")
 
     shown = []
     hidden = []

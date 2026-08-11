@@ -66,14 +66,13 @@ def test_document_wait_node():
     assert result['nodes']['n1'] == {'type': 'wait', 'duration_ms': 500, 'out': None}
 
 
-def test_document_decision_branch_mode_with_images_and_false():
+def test_document_branch_with_images_and_false():
     doc = {
         'start_node_id': 'd1',
         'nodes': {
             'd1': {
-                'type': 'decision',
+                'type': 'branch',
                 'properties': {
-                    'evaluation_mode': 'Branch (True/False)',
                     'match_threshold': '0.9',
                     'images': [
                         {'reference_path': 'a.png', 'region_x': 0, 'region_y': 0, 'region_w': 10, 'region_h': 10},
@@ -94,25 +93,23 @@ def test_document_decision_branch_mode_with_images_and_false():
     result = build_engine_graph_from_document(doc)
 
     assert result['nodes']['d1'] == {
-        'type': 'decision',
+        'type': 'branch',
         'images': [
             {'reference_path': 'a.png', 'region': [0, 0, 10, 10], 'out': 'done'},
             {'reference_path': 'b.png', 'region': [5, 5, 8, 8], 'out': None},
         ],
         'match_threshold': 0.9,
-        'evaluation_mode': 'branch',
         'false': 'done',
     }
 
 
-def test_document_decision_wait_until_true_mode_has_poll_interval_not_false():
+def test_document_branch_wait_has_poll_interval_not_false():
     doc = {
         'start_node_id': 'd1',
         'nodes': {
             'd1': {
-                'type': 'decision',
+                'type': 'branch_wait',
                 'properties': {
-                    'evaluation_mode': 'Wait Until True',
                     'match_threshold': '0.85',
                     'poll_interval_ms': '200',
                     'images': [{'reference_path': 'a.png', 'region_x': 0, 'region_y': 0, 'region_w': 1, 'region_h': 1}],
@@ -125,6 +122,6 @@ def test_document_decision_wait_until_true_mode_has_poll_interval_not_false():
     result = build_engine_graph_from_document(doc)
 
     entry = result['nodes']['d1']
-    assert entry['evaluation_mode'] == 'wait_until_true'
+    assert entry['type'] == 'branch_wait'
     assert entry['poll_interval_ms'] == 200
     assert 'false' not in entry

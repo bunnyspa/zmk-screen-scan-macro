@@ -63,16 +63,18 @@
        above, overflowing it out of the 220px node. */
     #main .drawflow-node input[type=text] { width: 100%; }
     /* Leaves room on the right for the port-aligned thumbnail column
-       (20px thumb + 4px gap, see DECISION_THUMB_SIZE/DECISION_THUMB_GAP in
-       graph_editor.js) so it doesn't sit on top of the form fields. */
-    .drawflow-node.decision-node .drawflow_content_node { padding-right: 28px; box-sizing: border-box; }
+       (20px thumb + 4px gap, see BRANCH_THUMB_SIZE/BRANCH_THUMB_GAP in
+       graph_editor.js) so it doesn't sit on top of the form fields.
+       Shared by both Branch and Branch (Wait). */
+    .drawflow-node.branch-node .drawflow_content_node,
+    .drawflow-node.branch-wait-node .drawflow_content_node { padding-right: 28px; box-sizing: border-box; }
     /* top/right/bottom/left spelled out, not the `inset: 0` shorthand -
        QtWebEngine's bundled Chromium may be too old to support `inset`,
        which would silently drop this rule and leave the overlay in normal
        document flow (confirmed as the likely cause of thumbnails rendering
        below the node instead of pinned to its ports). */
-    .drawflow-node .decision-thumb-overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
-    .drawflow-node .decision-node-thumb { position: absolute; width: 20px; height: 20px; object-fit: contain; background: #fff; border: 1px solid #ddd; }
+    .drawflow-node .branch-thumb-overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
+    .drawflow-node .branch-node-thumb { position: absolute; width: 20px; height: 20px; object-fit: contain; background: #fff; border: 1px solid #ddd; }
 
     #image-editor-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
     #image-editor-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; }
@@ -137,7 +139,8 @@
   <div id="graph-context-menu">
     <button type="button" data-node-type="action">+ Action</button>
     <button type="button" data-node-type="wait">+ Wait</button>
-    <button type="button" data-node-type="decision">+ Decision</button>
+    <button type="button" data-node-type="branch">+ Branch</button>
+    <button type="button" data-node-type="branch_wait">+ Branch (Wait)</button>
   </div>
 
   <div id="image-editor-modal">

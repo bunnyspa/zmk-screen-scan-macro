@@ -1,56 +1,47 @@
-/* Phase 4 of the PyQt5/NodeGraphQt -> web UI migration (see the approved
- * migration plan): the graph editor itself, built on Drawflow (vendored at
- * vendor/drawflow/ - see the plan's library-choice section for why Rete.js/
- * Baklava.js were ruled out: both require React/Vue + a bundler, which this
- * app deliberately has none of).
+/* Graph editor built on Drawflow (vendored at vendor/drawflow/) - Rete.js/
+ * Baklava.js were ruled out since both require React/Vue + a bundler,
+ * which this app deliberately has none of.
  *
- * Owns everything about *editing* the graph (see the plan's "Runtime
- * responsibilities" section) - node/port/connection rendering, property
- * fields (bound directly via Drawflow's df-* attributes, no separate side
- * panel), the exclusive "start node" flag, and packaging/unpacking the
- * GraphDocument JSON (index.html owns save/load plumbing and calls the two
- * exported functions below). Only Action and Wait node types this phase;
- * Decision arrives in Phase 5.
+ * Owns everything about *editing* the graph - node/port/connection
+ * rendering, property fields (bound directly via Drawflow's df-*
+ * attributes, no separate side panel), the exclusive "start node" flag,
+ * and packaging/unpacking the GraphDocument JSON (index.html owns
+ * save/load plumbing and calls the two exported functions below).
  *
- * Deliberately NOT wired to any bridge.* calls yet: click-region picking
- * (the "Pick Click Region"/"Show Region in Window" buttons that exist in
- * the old NodeGraphQt ActionNode) needs the native overlay bridge methods
- * from Phase 6, so for now Action's click region is four plain number
- * inputs. Key/combo capture is done in-browser (keydown listener below) -
- * no bridge round-trip needed for that one.
+ * Four node types: Action (click or key press), Wait (fixed delay),
+ * Branch (check a reference image once, true/false), and Branch (Wait)
+ * (poll until a reference image matches, single progression path - no
+ * false port at all, since there's nothing to fall through to). Branch
+ * and Branch (Wait) were one "Decision" node type with an evaluation_mode
+ * dropdown until they were split, so a node's port shape (specifically,
+ * whether a trailing false port exists) is a fixed property of its type
+ * instead of something that changes with a mutable per-instance mode.
  *
- * Phase 5 adds the Decision node: match_threshold/evaluation_mode/
- * poll_interval_ms are plain df-* bound fields like the other node types,
- * but its `images` list and per-image output ports ("1".."N" + "false")
- * need real bridge round-trips (image upload/masking is OpenCV work that
- * only exists in Python, and the port-rewiring algorithm on add/delete/
- * move is decision_images.py - already unit-tested in Python, so it's
- * called through the bridge rather than re-implemented untested here).
- * The image-management UI is a single shared modal (#image-editor-modal
- * in index.html), repointed at whichever Decision node is open at a time
- * (editingDecisionNodeId) rather than one dialog instance per node - this
- * app only ever has one such dialog open at once anyway. "Show Region in
- * Window" (the old app's per-image preview button) is deferred to Phase 6
- * along with Action's region-picking, for the same reason - no overlay
- * bridge yet.
+ * Branch/Branch (Wait)'s `images` list and per-image output ports
+ * ("1".."N", + "false" for Branch only) need real bridge round-trips:
+ * image upload/masking is OpenCV work that only exists in Python, and the
+ * port-rewiring algorithm on add/delete/move is decision_images.py -
+ * already unit-tested in Python, so it's called through the bridge
+ * rather than re-implemented untested here. The image-management UI is a
+ * single shared modal (#image-editor-modal in index.html), repointed at
+ * whichever node is open at a time (editingBranchNodeId) rather than one
+ * dialog instance per node - this app only ever has one such dialog open
+ * at once anyway.
  */
 
-// These string values must match graph_translation.py's _ACTION_KEY_PRESS/
-// _EVAL_MODE_BRANCH exactly - they're stored verbatim in
-// properties.action_type/evaluation_mode and read back by
-// build_engine_graph_from_document() when translating a GraphDocument to
-// the engine schema. Kept in sync by convention, not by import (no
+// This string value must match graph_translation.py's _ACTION_KEY_PRESS
+// exactly - it's stored verbatim in properties.action_type and read back
+// by build_engine_graph_from_document() when translating a GraphDocument
+// to the engine schema. Kept in sync by convention, not by import (no
 // Qt-importing code in this file).
 const ACTION_TYPE_CLICK = 'Click';
 const ACTION_TYPE_KEY_PRESS = 'Key Press';
-const EVAL_MODE_BRANCH = 'Branch (True/False)';
-const EVAL_MODE_WAIT = 'Wait Until True';
 const MODIFIER_KEYS = ['Control', 'Alt', 'Shift', 'Meta'];
 
 let editor = null;
 let startNodeId = null;
 let nextSpawnOffset = 0;
-let editingDecisionNodeId = null;
+let editingBranchNodeId = null;
 let imageThumbnailUrls = {}; // reference_path -> data: URI, display-only, never saved
 
 function defaultActionProperties() {
@@ -66,8 +57,12 @@ function defaultWaitProperties() {
   return { duration_ms: 1000 };
 }
 
-function defaultDecisionProperties() {
-  return { images: [], match_threshold: 0.85, evaluation_mode: EVAL_MODE_BRANCH, poll_interval_ms: 200 };
+function defaultBranchProperties() {
+  return { images: [], match_threshold: 0.85 };
+}
+
+function defaultBranchWaitProperties() {
+  return { images: [], match_threshold: 0.85, poll_interval_ms: 200 };
 }
 
 function renderActionNodeHtml() {
@@ -117,23 +112,27 @@ function renderWaitNodeHtml() {
   );
 }
 
-function renderDecisionNodeHtml() {
+function renderBranchNodeHtml() {
   return (
     '<div class="node-header">' +
-      '<span class="node-type-label">Decision</span>' +
+      '<span class="node-type-label">Branch</span>' +
       '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
       '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
     '</div>' +
     '<label>Match Threshold <input type="number" df-match_threshold min="0" max="1" step="0.01"></label>' +
-    '<label>Evaluation Mode' +
-      '<select df-evaluation_mode>' +
-        '<option value="' + EVAL_MODE_BRANCH + '">' + EVAL_MODE_BRANCH + '</option>' +
-        '<option value="' + EVAL_MODE_WAIT + '">' + EVAL_MODE_WAIT + '</option>' +
-      '</select>' +
-    '</label>' +
-    '<div class="decision-poll-field">' +
-      '<label>Poll Interval (ms) <input type="number" df-poll_interval_ms min="10"></label>' +
+    '<button type="button" class="edit-images-btn" style="margin-top: 6px;">Edit Images...</button>'
+  );
+}
+
+function renderBranchWaitNodeHtml() {
+  return (
+    '<div class="node-header">' +
+      '<span class="node-type-label">Branch (Wait)</span>' +
+      '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
+      '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
     '</div>' +
+    '<label>Match Threshold <input type="number" df-match_threshold min="0" max="1" step="0.01"></label>' +
+    '<label>Poll Interval (ms) <input type="number" df-poll_interval_ms min="10"></label>' +
     '<button type="button" class="edit-images-btn" style="margin-top: 6px;">Edit Images...</button>'
   );
 }
@@ -154,42 +153,36 @@ function updateActionFieldVisibility(nodeEl) {
   if (keyFields) keyFields.style.display = isClick ? 'none' : '';
 }
 
-function updateDecisionFieldVisibility(nodeEl) {
-  const select = nodeEl.querySelector('[df-evaluation_mode]');
-  if (!select) return;
-  const pollField = nodeEl.querySelector('.decision-poll-field');
-  if (pollField) pollField.style.display = select.value === EVAL_MODE_WAIT ? '' : 'none';
-}
+const BRANCH_THUMB_SIZE = 20;
+const BRANCH_THUMB_GAP = 4;
 
-const DECISION_THUMB_SIZE = 20;
-const DECISION_THUMB_GAP = 4;
-
-function ensureDecisionThumbOverlay(nodeEl) {
-  let overlay = nodeEl.querySelector(':scope > .decision-thumb-overlay');
+function ensureBranchThumbOverlay(nodeEl) {
+  let overlay = nodeEl.querySelector(':scope > .branch-thumb-overlay');
   if (!overlay) {
     overlay = document.createElement('div');
-    overlay.className = 'decision-thumb-overlay';
+    overlay.className = 'branch-thumb-overlay';
     nodeEl.appendChild(overlay);
   }
   return overlay;
 }
 
 // Positions one small thumbnail directly beside each image's corresponding
-// output port circle ("false" gets none), measured from the ports' actual
-// rendered position (getBoundingClientRect()) rather than derived from
-// Drawflow's internal layout math (the .outputs column is centered as a
-// whole block within the node's height, not flush to its top - not worth
-// reverse-engineering when the real position is one measurement away).
-// Dividing by editor.zoom keeps this aligned at any zoom level, since rect
-// measurements come back in already-scaled screen pixels but the
-// thumbnails are positioned in the same unscaled coordinate space as the
-// node itself (both live inside Drawflow's zoom/pan transform, so a raw
-// scaled pixel delta would double-apply the zoom otherwise).
-function renderDecisionNodeImageList(nodeId) {
+// output port circle ("false", on a Branch node, gets none), measured from
+// the ports' actual rendered position (getBoundingClientRect()) rather than
+// derived from Drawflow's internal layout math (the .outputs column is
+// centered as a whole block within the node's height, not flush to its top
+// - not worth reverse-engineering when the real position is one
+// measurement away). Dividing by editor.zoom keeps this aligned at any
+// zoom level, since rect measurements come back in already-scaled screen
+// pixels but the thumbnails are positioned in the same unscaled coordinate
+// space as the node itself (both live inside Drawflow's zoom/pan
+// transform, so a raw scaled pixel delta would double-apply the zoom
+// otherwise). Shared by both Branch and Branch (Wait).
+function renderBranchNodeImageList(nodeId) {
   const nodeEl = document.getElementById('node-' + nodeId);
   if (!nodeEl) return;
-  const overlay = ensureDecisionThumbOverlay(nodeEl);
-  const images = decisionImagesOf(nodeId);
+  const overlay = ensureBranchThumbOverlay(nodeEl);
+  const images = branchImagesOf(nodeId);
   const outputEls = nodeEl.querySelectorAll('.outputs .output');
   const nodeRect = nodeEl.getBoundingClientRect();
   const zoom = editor.zoom || 1;
@@ -199,9 +192,9 @@ function renderDecisionNodeImageList(nodeId) {
     if (!portEl) return '';
     const portRect = portEl.getBoundingClientRect();
     const top = (portRect.top - nodeRect.top) / zoom;
-    const left = (portRect.left - nodeRect.left) / zoom - DECISION_THUMB_SIZE - DECISION_THUMB_GAP;
+    const left = (portRect.left - nodeRect.left) / zoom - BRANCH_THUMB_SIZE - BRANCH_THUMB_GAP;
     const thumbUrl = imageThumbnailUrls[image.reference_path] || '';
-    return '<img class="decision-node-thumb" style="top: ' + top + 'px; left: ' + left + 'px;" ' +
+    return '<img class="branch-node-thumb" style="top: ' + top + 'px; left: ' + left + 'px;" ' +
       'src="' + thumbUrl + '" alt="" title="Image #' + (index + 1) + '">';
   }).join('');
 }
@@ -264,7 +257,7 @@ function initGraphEditor(containerEl, onDirty) {
     } else if (event.target.classList.contains('delete-node-btn')) {
       const id = nodeIdFromEventTarget(event.target);
       if (id != null) {
-        if (editingDecisionNodeId === id) closeImageEditor();
+        if (editingBranchNodeId === id) closeImageEditor();
         editor.removeNodeId('node-' + id);
         if (startNodeId === id) startNodeId = null;
         onDirty();
@@ -302,15 +295,6 @@ function initGraphEditor(containerEl, onDirty) {
     onDirty();
     if (event.target.matches('[df-action_type]')) {
       updateActionFieldVisibility(event.target.closest('.drawflow-node'));
-    } else if (event.target.matches('[df-evaluation_mode]')) {
-      const nodeEl = event.target.closest('.drawflow-node');
-      updateDecisionFieldVisibility(nodeEl);
-      // Showing/hiding the Poll Interval field changes the node's height,
-      // which shifts where Drawflow vertically centers the .outputs column
-      // - the thumbnail positions computed against the old height are now
-      // stale (confirmed via a real screenshot: switching to "Wait Until
-      // True" left the thumbnails pinned to where the ports used to be).
-      renderDecisionNodeImageList(nodeIdFromEventTarget(nodeEl));
     }
   });
 
@@ -374,7 +358,8 @@ function initGraphContextMenu() {
       const position = contextMenuPosition;
       if (button.dataset.nodeType === 'action') addActionNode(position);
       else if (button.dataset.nodeType === 'wait') addWaitNode(position);
-      else if (button.dataset.nodeType === 'decision') addDecisionNode(position);
+      else if (button.dataset.nodeType === 'branch') addBranchNode(position);
+      else if (button.dataset.nodeType === 'branch_wait') addBranchWaitNode(position);
       hideGraphContextMenu();
     });
   });
@@ -457,11 +442,12 @@ function fitViewToNodes() {
 }
 
 // Every output port here means "go to exactly one next node" (matches
-// build_engine_graph()'s _first_connected_node_id(), which only ever reads
-// the first connection - see graph_translation.py). Drawflow itself places
-// no limit on connections per output, so a new connection from a port that
-// already had one silently replaces it rather than fanning out, to avoid a
-// second wire that the engine would just ignore.
+// build_engine_graph_from_document()'s _first_connected_document_node(),
+// which only ever reads the first connection - see graph_translation.py).
+// Drawflow itself places no limit on connections per output, so a new
+// connection from a port that already had one silently replaces it rather
+// than fanning out, to avoid a second wire that the engine would just
+// ignore.
 function enforceSingleOutputConnection(payload) {
   const node = editor.getNodeFromId(payload.output_id);
   const connections = (node.outputs[payload.output_class] || {}).connections || [];
@@ -495,14 +481,23 @@ function addWaitNode(position) {
   );
 }
 
-function addDecisionNode(position) {
+function addBranchNode(position) {
   const pos = position || nextSpawnPosition();
   const id = editor.addNode(
-    'decision', 1, 1, pos.x, pos.y, 'decision-node', // 1 output: just 'false', 0 images
-    defaultDecisionProperties(), renderDecisionNodeHtml(),
+    'branch', 1, 1, pos.x, pos.y, 'branch-node', // 1 output: just 'false', 0 images
+    defaultBranchProperties(), renderBranchNodeHtml(),
   );
-  updateDecisionFieldVisibility(document.getElementById('node-' + id));
-  renderDecisionNodeImageList(id);
+  renderBranchNodeImageList(id);
+  return id;
+}
+
+function addBranchWaitNode(position) {
+  const pos = position || nextSpawnPosition();
+  const id = editor.addNode(
+    'branch_wait', 1, 0, pos.x, pos.y, 'branch-wait-node', // 0 outputs, 0 images - no false port ever
+    defaultBranchWaitProperties(), renderBranchWaitNodeHtml(),
+  );
+  renderBranchNodeImageList(id);
   return id;
 }
 
@@ -531,16 +526,20 @@ function graphDocumentIsCompatible(graph) {
 
 function renderNodeHtml(type) {
   if (type === 'wait') return renderWaitNodeHtml();
-  if (type === 'decision') return renderDecisionNodeHtml();
+  if (type === 'branch') return renderBranchNodeHtml();
+  if (type === 'branch_wait') return renderBranchWaitNodeHtml();
   return renderActionNodeHtml();
 }
 
-/* GraphDocument (see the plan's schema) <-> Drawflow's own export() shape.
+/* GraphDocument (see engine/runner.py's module docstring for the engine-
+ * side schema this ultimately becomes) <-> Drawflow's own export() shape.
  * Action/Wait nodes always have one input ("in") and one output ("out");
- * Decision has one input and N+1 outputs named "1".."N" (image priority
- * order) + "false", which map onto Drawflow's output_1..output_(N+1) in
- * that same order - an invariant this module always maintains (see
- * rebuildDecisionOutputPorts()), so no separate name-mapping needs storing. */
+ * Branch has one input and N+1 outputs named "1".."N" (image priority
+ * order) + "false"; Branch (Wait) has one input and N outputs named
+ * "1".."N" only - no "false" port at all. Both map onto Drawflow's
+ * output_1..output_N(+1) in that same order - an invariant this module
+ * always maintains (see rebuildBranchOutputPorts()), so no separate
+ * name-mapping needs storing. */
 function loadGraphDocument(doc, imageThumbnails) {
   clearGraphEditor();
   mergeImageThumbnails(imageThumbnails);
@@ -550,27 +549,29 @@ function loadGraphDocument(doc, imageThumbnails) {
 
   docIds.forEach(function (docId) {
     const node = nodes[docId];
-    const numImages = node.type === 'decision' ? (node.properties.images || []).length : 0;
-    const numOutputs = node.type === 'decision' ? numImages + 1 : 1;
+    const isBranchFamily = node.type === 'branch' || node.type === 'branch_wait';
+    const numImages = isBranchFamily ? (node.properties.images || []).length : 0;
+    const numOutputs = node.type === 'branch' ? numImages + 1 : node.type === 'branch_wait' ? numImages : 1;
     const newId = editor.addNode(
       node.type, 1, numOutputs, node.position[0], node.position[1],
-      node.type + '-node', Object.assign({}, node.properties), renderNodeHtml(node.type),
+      node.type.replace('_', '-') + '-node', Object.assign({}, node.properties), renderNodeHtml(node.type),
     );
     docIdToDrawflowId[docId] = newId;
     const nodeEl = document.getElementById('node-' + newId);
     if (node.type === 'action') updateActionFieldVisibility(nodeEl);
-    if (node.type === 'decision') {
-      updateDecisionFieldVisibility(nodeEl);
-      renderDecisionNodeImageList(newId);
-    }
+    if (isBranchFamily) renderBranchNodeImageList(newId);
   });
 
   Object.keys(nodes).forEach(function (docId) {
     const node = nodes[docId];
     const sourceId = docIdToDrawflowId[docId];
     const connectionsByPort = node.connections || {};
-    const portNames = node.type === 'decision'
-      ? Array.from({ length: (node.properties.images || []).length }, function (_, i) { return String(i + 1); }).concat(['false'])
+    const numImages = (node.type === 'branch' || node.type === 'branch_wait')
+      ? (node.properties.images || []).length : 0;
+    const portNames = node.type === 'branch'
+      ? Array.from({ length: numImages }, function (_, i) { return String(i + 1); }).concat(['false'])
+      : node.type === 'branch_wait'
+      ? Array.from({ length: numImages }, function (_, i) { return String(i + 1); })
       : ['out'];
     portNames.forEach(function (portName, outputIndex) {
       (connectionsByPort[portName] || []).forEach(function (conn) {
@@ -592,9 +593,11 @@ function exportGraphDocument() {
   const nodes = {};
   Object.keys(rawNodes).forEach(function (id) {
     const raw = rawNodes[id];
-    const outputNames = Object.keys(raw.outputs); // already in output_1..output_N order (see rebuildDecisionOutputPorts)
-    const portNames = raw.name === 'decision'
+    const outputNames = Object.keys(raw.outputs); // already in output_1..output_N order (see rebuildBranchOutputPorts)
+    const portNames = raw.name === 'branch'
       ? outputNames.slice(0, -1).map(function (_, i) { return String(i + 1); }).concat(['false'])
+      : raw.name === 'branch_wait'
+      ? outputNames.map(function (_, i) { return String(i + 1); })
       : ['out'];
     const connections = {};
     outputNames.forEach(function (outputClass, i) {
@@ -615,30 +618,35 @@ function exportGraphDocument() {
   };
 }
 
-/* --- Decision node: images list + per-image output ports --- */
+/* --- Branch/Branch (Wait): images list + per-image output ports --- */
 
 function mergeImageThumbnails(map) {
   Object.assign(imageThumbnailUrls, map || {});
 }
 
-function decisionImagesOf(nodeId) {
+function branchImagesOf(nodeId) {
   return editor.getNodeFromId(nodeId).data.images || [];
 }
 
 // Reads the node's *current* output ports back into the same
 // {portName: [{node, port}]} shape GraphDocument.connections uses, relying
 // on the output_k <-> port-name invariant described above loadGraphDocument().
-function currentDecisionConnections(nodeId) {
+// Only a 'branch'-type node has a trailing false port; 'branch_wait' never
+// does (see module docstring).
+function currentBranchConnections(nodeId) {
   const node = editor.getNodeFromId(nodeId);
+  const hasFalsePort = node.name === 'branch';
   const numOutputs = Object.keys(node.outputs).length;
-  const numImages = numOutputs - 1;
+  const numImages = hasFalsePort ? numOutputs - 1 : numOutputs;
   const result = {};
   for (let i = 0; i < numImages; i++) {
     const conns = (node.outputs['output_' + (i + 1)] || {}).connections || [];
     result[String(i + 1)] = conns.map(function (c) { return { node: String(c.node), port: 'in' }; });
   }
-  const falseConns = (node.outputs['output_' + numOutputs] || {}).connections || [];
-  result.false = falseConns.map(function (c) { return { node: String(c.node), port: 'in' }; });
+  if (hasFalsePort) {
+    const falseConns = (node.outputs['output_' + numOutputs] || {}).connections || [];
+    result.false = falseConns.map(function (c) { return { node: String(c.node), port: 'in' }; });
+  }
   return result;
 }
 
@@ -646,17 +654,21 @@ function currentDecisionConnections(nodeId) {
 // DecisionNode._sync_output_ports()'s "recompute from scratch is simpler
 // than incremental rename/reconnect" approach) from newConnections (as
 // returned by decision_images.rewire_ports_after_image_change() via the
-// bridge). Removing "output_1" numImages+1 times is deliberate, not a typo -
-// Drawflow's removeNodeOutput() renumbers remaining ports down after each
-// removal (confirmed via source read), so the first remaining port is
-// always named output_1 regardless of how many removals have happened.
-function rebuildDecisionOutputPorts(nodeId, newConnections, numImages) {
+// bridge). includeFalsePort is a property of the node's *type* (true for
+// 'branch', false for 'branch_wait'), not a per-instance toggle - see
+// module docstring. Removing "output_1" existingCount times is deliberate,
+// not a typo - Drawflow's removeNodeOutput() renumbers remaining ports
+// down after each removal (confirmed via source read), so the first
+// remaining port is always named output_1 regardless of how many
+// removals have happened.
+function rebuildBranchOutputPorts(nodeId, newConnections, numImages, includeFalsePort) {
   const node = editor.getNodeFromId(nodeId);
   const existingCount = Object.keys(node.outputs).length;
   for (let i = 0; i < existingCount; i++) {
     editor.removeNodeOutput(nodeId, 'output_1');
   }
-  for (let i = 0; i < numImages + 1; i++) {
+  const totalPorts = numImages + (includeFalsePort ? 1 : 0);
+  for (let i = 0; i < totalPorts; i++) {
     editor.addNodeOutput(nodeId);
   }
   for (let i = 0; i < numImages; i++) {
@@ -664,9 +676,11 @@ function rebuildDecisionOutputPorts(nodeId, newConnections, numImages) {
       editor.addConnection(nodeId, conn.node, 'output_' + (i + 1), 'input_1');
     });
   }
-  (newConnections.false || []).forEach(function (conn) {
-    editor.addConnection(nodeId, conn.node, 'output_' + (numImages + 1), 'input_1');
-  });
+  if (includeFalsePort) {
+    (newConnections.false || []).forEach(function (conn) {
+      editor.addConnection(nodeId, conn.node, 'output_' + (numImages + 1), 'input_1');
+    });
+  }
 }
 
 // Shared by add/delete/move: apply a new images[] + the position_mapping
@@ -674,48 +688,49 @@ function rebuildDecisionOutputPorts(nodeId, newConnections, numImages) {
 // NodeGraphQt desktop app's add/delete/move-image handlers built), via
 // decision_images.rewire_ports_after_image_change() (Python, tested)
 // through the bridge, then rebuild ports/UI to match.
-function applyDecisionImagesChange(nodeId, newImages, positionMapping) {
-  const oldConnections = currentDecisionConnections(nodeId);
+function applyBranchImagesChange(nodeId, newImages, positionMapping) {
+  const includeFalsePort = editor.getNodeFromId(nodeId).name === 'branch';
+  const oldConnections = currentBranchConnections(nodeId);
   return pywebview.api.rewire_decision_ports(oldConnections, positionMapping, newImages.length).then(function (newConnections) {
     const data = Object.assign({}, editor.getNodeFromId(nodeId).data, { images: newImages });
     editor.updateNodeDataFromId(nodeId, data);
-    rebuildDecisionOutputPorts(nodeId, newConnections, newImages.length);
-    renderDecisionNodeImageList(nodeId);
+    rebuildBranchOutputPorts(nodeId, newConnections, newImages.length, includeFalsePort);
+    renderBranchNodeImageList(nodeId);
     renderImageEditorList();
     setDirty(true);
   });
 }
 
-function addDecisionImageFlow() {
-  const nodeId = editingDecisionNodeId;
+function addBranchImageFlow() {
+  const nodeId = editingBranchNodeId;
   pywebview.api.add_decision_image(currentProfile, nodeId).then(function (result) {
     if (!result.ok) {
       if (!result.cancelled) showError(result.error);
       return;
     }
     imageThumbnailUrls[result.image.reference_path] = result.thumbnail_url;
-    const images = decisionImagesOf(nodeId);
+    const images = branchImagesOf(nodeId);
     const mapping = {};
     for (let i = 0; i < images.length; i++) mapping[i] = i;
     mapping[images.length] = null;
-    applyDecisionImagesChange(nodeId, images.concat([result.image]), mapping);
+    applyBranchImagesChange(nodeId, images.concat([result.image]), mapping);
   });
 }
 
-function deleteDecisionImage(index) {
-  const nodeId = editingDecisionNodeId;
-  const images = decisionImagesOf(nodeId);
+function deleteBranchImage(index) {
+  const nodeId = editingBranchNodeId;
+  const images = branchImagesOf(nodeId);
   const newImages = images.slice(0, index).concat(images.slice(index + 1));
   const mapping = {};
   for (let newIndex = 0; newIndex < newImages.length; newIndex++) {
     mapping[newIndex] = newIndex < index ? newIndex : newIndex + 1;
   }
-  applyDecisionImagesChange(nodeId, newImages, mapping);
+  applyBranchImagesChange(nodeId, newImages, mapping);
 }
 
-function moveDecisionImage(index, delta) {
-  const nodeId = editingDecisionNodeId;
-  const images = decisionImagesOf(nodeId);
+function moveBranchImage(index, delta) {
+  const nodeId = editingBranchNodeId;
+  const images = branchImagesOf(nodeId);
   const target = index + delta;
   if (target < 0 || target >= images.length) return;
   const newImages = images.slice();
@@ -726,24 +741,24 @@ function moveDecisionImage(index, delta) {
   for (let i = 0; i < images.length; i++) mapping[i] = i;
   mapping[index] = target;
   mapping[target] = index;
-  applyDecisionImagesChange(nodeId, newImages, mapping);
+  applyBranchImagesChange(nodeId, newImages, mapping);
 }
 
 function openImageEditor(nodeId) {
-  editingDecisionNodeId = nodeId;
+  editingBranchNodeId = nodeId;
   renderImageEditorList();
   document.getElementById('image-editor-modal').style.display = 'flex';
 }
 
 function closeImageEditor() {
-  editingDecisionNodeId = null;
+  editingBranchNodeId = null;
   const modal = document.getElementById('image-editor-modal');
   if (modal) modal.style.display = 'none';
 }
 
 function renderImageEditorList() {
-  if (editingDecisionNodeId == null) return;
-  const images = decisionImagesOf(editingDecisionNodeId);
+  if (editingBranchNodeId == null) return;
+  const images = branchImagesOf(editingBranchNodeId);
   const list = document.getElementById('image-editor-list');
   list.innerHTML = '';
   images.forEach(function (image, index) {
@@ -757,20 +772,20 @@ function renderImageEditorList() {
       '<button type="button" class="move-right-btn"' + (index === images.length - 1 ? ' disabled' : '') + '>→</button>' +
       '<button type="button" class="show-image-region-btn">Show</button>' +
       '<button type="button" class="delete-image-btn">Delete</button>';
-    row.querySelector('.move-left-btn').addEventListener('click', function () { moveDecisionImage(index, -1); });
-    row.querySelector('.move-right-btn').addEventListener('click', function () { moveDecisionImage(index, 1); });
+    row.querySelector('.move-left-btn').addEventListener('click', function () { moveBranchImage(index, -1); });
+    row.querySelector('.move-right-btn').addEventListener('click', function () { moveBranchImage(index, 1); });
     row.querySelector('.show-image-region-btn').addEventListener('click', function () { showImageRegionFlow(index); });
-    row.querySelector('.delete-image-btn').addEventListener('click', function () { deleteDecisionImage(index); });
+    row.querySelector('.delete-image-btn').addEventListener('click', function () { deleteBranchImage(index); });
     list.appendChild(row);
   });
 }
 
 function initImageEditorModal() {
   document.getElementById('image-editor-close-btn').addEventListener('click', closeImageEditor);
-  document.getElementById('image-editor-add-btn').addEventListener('click', addDecisionImageFlow);
+  document.getElementById('image-editor-add-btn').addEventListener('click', addBranchImageFlow);
 }
 
-/* --- Click-region picker / show-region preview (Phase 6b) ---
+/* --- Click-region picker / show-region preview ---
  * Native overlays over the live target window, via pick_controller.py -
  * the old NodeGraphQt desktop app wired this directly to a node's Qt
  * widgets; here it's bridge-callable, returning a plain dict instead.
@@ -804,7 +819,7 @@ async function showClickRegionFlow(nodeId) {
 }
 
 async function showImageRegionFlow(index) {
-  const image = decisionImagesOf(editingDecisionNodeId)[index];
+  const image = branchImagesOf(editingBranchNodeId)[index];
   const result = await pywebview.api.show_reference_region(
     currentProfile, currentTargetWindowTitle(), image.reference_path, image.region_x, image.region_y,
   );

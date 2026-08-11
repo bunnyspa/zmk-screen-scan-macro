@@ -9,32 +9,42 @@ tests/fixtures/example_graph.json for a worked example.
   "start_node": "<node id>",
   "nodes": {
     "<node id>": {
-      "type": "action" | "wait" | "decision",
+      "type": "action" | "wait" | "branch" | "branch_wait",
       ... type-specific fields below ...
-      "out": "<node id>" | null         # action, wait
-      "true": "<node id>" | null, "false": "<node id>" | null   # decision
+      "out": "<node id>" | null         # action, wait, branch_wait; also
+                                         # each of branch's own per-image entries
+      "false": "<node id>" | null       # branch only
     }, ...
   }
 }
 
-An "out"/"true"/"false" of null (an unconnected port, per
-graph_translation.py's _first_connected_document_node) is a dead end: the
-run just ends there rather than erroring.
+An "out"/"false" of null (an unconnected port, per graph_translation.py's
+_first_connected_document_node) is a dead end: the run just ends there
+rather than erroring.
 
-action:   action_type: "key_press" | "click"
-          key_combo: str (single a-z letter, key_press)
-          click_rect: [x, y, w, h] (window-relative, click)
-          mouse_button: "left" | "right" | "middle" (click, default "left")
-wait:     duration_ms: int
-decision: images: [{reference_path: str (relative to profile_dir, cropped
-                     alpha-masked BGRA PNG), region: [x, y, w, h]
-                     (window-relative), out: "<node id>" | null}, ...]
-                    - an OR match: checked in list order, first one that
-                      meets match_threshold wins and its own "out" is taken.
-          match_threshold: float (shared across every image in the list)
-          evaluation_mode: "branch" | "wait_until_true"
-          poll_interval_ms: int (wait_until_true only, default 200)
-          "false": "<node id>" | null (branch only - taken if no image matched)
+action:      action_type: "key_press" | "click"
+             key_combo: str (single a-z letter, key_press)
+             click_rect: [x, y, w, h] (window-relative, click)
+             mouse_button: "left" | "right" | "middle" (click, default "left")
+wait:        duration_ms: int
+branch:      images: [{reference_path: str (relative to profile_dir, cropped
+                        alpha-masked BGRA PNG), region: [x, y, w, h]
+                        (window-relative), out: "<node id>" | null}, ...]
+                       - an OR match: checked in list order, first one that
+                         meets match_threshold wins and its own "out" is taken.
+             match_threshold: float (shared across every image in the list)
+             "false": "<node id>" | null (taken if no image matched)
+branch_wait: images: [...] (same shape/OR-matching as branch)
+             match_threshold: float
+             poll_interval_ms: int (default 200)
+                       - polls until any image matches, then that image's
+                         own "out" is taken; no "false" - a branch_wait
+                         node never has one to fall through to.
+
+branch/branch_wait were one "decision" node type with an evaluation_mode
+field until they were split (a node's shape - specifically, whether a
+trailing false port exists at all - no longer needs to change based on a
+mutable per-instance mode).
 
 Cyclic graphs are intentional (retry-until-true idiom) - the runner does not
 detect or refuse cycles. Call .stop() to end a run; without it, a cyclic
@@ -123,13 +133,13 @@ class MacroRunner:
         self._show_pending_click = show_pending_click
         self._show_pending_key_press = show_pending_key_press
         self._confirmation_poll_interval_ms = confirmation_poll_interval_ms
-        # Decision-node live overlay (reference image + match percentage) -
-        # shown during Wait Until True polling (regardless of confirmation
-        # mode) and/or right before a decision resolves in confirmation
-        # mode (both modes, per the design discussion this came from) -
-        # see _run_decision(). Injected the same way as
-        # show_pending_click/show_pending_key_press, for the same reason
-        # (UI-thread work).
+        # branch/branch_wait live overlay (reference image + match
+        # percentage) - shown during branch_wait polling (regardless of
+        # confirmation mode) and/or right before a branch/branch_wait
+        # resolves in confirmation mode (both types, per the design
+        # discussion this came from) - see _make_decision_helpers().
+        # Injected the same way as show_pending_click/
+        # show_pending_key_press, for the same reason (UI-thread work).
         self._show_decision_overlay = show_decision_overlay
         self._hide_decision_overlay = hide_decision_overlay
         self._confirmation_event = threading.Event()
@@ -207,8 +217,10 @@ class MacroRunner:
             elif node_type == "wait":
                 self._stop_requested.wait(timeout=node["duration_ms"] / 1000.0)
                 node_id = node["out"]
-            elif node_type == "decision":
-                node_id = self._run_decision(node)
+            elif node_type == "branch":
+                node_id = self._run_branch(node)
+            elif node_type == "branch_wait":
+                node_id = self._run_branch_wait(node)
             else:
                 raise ValueError(f"unknown node type: {node_type}")
 
@@ -313,32 +325,31 @@ class MacroRunner:
         else:
             raise ValueError(f"unknown action_type: {action_type}")
 
-    def _run_decision(self, node: dict) -> str | None:
-        # Loaded once per node visit (not cached across polls within one
-        # wait_until_true call, same as the old single-image behavior) -
-        # each entry's own reference_bgra travels alongside it so
-        # _evaluate_images doesn't need to re-open files per poll.
+    def _make_decision_helpers(self, node: dict, threshold: float, show_overlay: bool):
+        """Shared setup for _run_branch()/_run_branch_wait(): loads every
+        image the node lists (fresh, not cached across polls within one
+        _run_branch_wait() call, same as the old single-image behavior -
+        each entry's own reference_bgra travels alongside it), and
+        returns (evaluate, update_overlay, clear_overlay) closures over
+        them.
+
+        show_overlay is supplied by the caller rather than decided here:
+        _run_branch wants it only in confirmation mode (a single
+        instantaneous evaluation has nothing to visualize turn-by-turn
+        otherwise), _run_branch_wait always wants it (there's something
+        to watch update over time). With multiple images, whichever one
+        is currently the best-scoring candidate is shown (the eventual
+        match isn't known until it crosses threshold) - the caller
+        (run_controller.py's _show_decision_overlay_on_gui_thread)
+        recreates the overlay whenever the shown region/reference
+        changes between polls."""
         images = [
             {**img, "reference_bgra": cv2.imread(
                 str(self._profile_dir / img["reference_path"]), cv2.IMREAD_UNCHANGED,
             )}
             for img in node["images"]
         ]
-        threshold = node["match_threshold"]
-        mode = node["evaluation_mode"]
 
-        # Live overlay (reference image + match %): shown for every Wait
-        # Until True poll regardless of confirmation mode (there's
-        # something to watch update over time), and for Branch mode only
-        # when confirmation mode is on (a single instantaneous evaluation
-        # has nothing to visualize turn-by-turn otherwise) - see the
-        # design discussion in the commit this came from. With multiple
-        # images, whichever one is currently the best-scoring candidate is
-        # shown (the eventual match isn't known until it crosses
-        # threshold) - the caller (run_controller.py's
-        # _show_decision_overlay_on_gui_thread) recreates the overlay
-        # whenever the shown region/reference changes between polls.
-        show_overlay = mode == "wait_until_true" or self._confirmation_mode
         origin = None
         if show_overlay and self._hwnd is not None:
             origin = get_window_extended_frame_origin(self._hwnd)
@@ -379,28 +390,43 @@ class MacroRunner:
             if show_overlay and self._hide_decision_overlay is not None:
                 self._hide_decision_overlay()
 
-        if mode == "branch":
+        return evaluate, update_overlay, clear_overlay
+
+    def _run_branch(self, node: dict) -> str | None:
+        """Evaluates every image once; returns the first matching image's
+        own "out" target, or node["false"] if none matched."""
+        threshold = node["match_threshold"]
+        evaluate, update_overlay, clear_overlay = self._make_decision_helpers(
+            node, threshold, show_overlay=self._confirmation_mode,
+        )
+        frame = self._capture.get_latest_frame_bgr()
+        matched_img, display_img, score = evaluate(frame)
+        update_overlay(display_img, score)
+        if self._confirmation_mode:
+            self._await_confirmation("decision", {})
+        clear_overlay()
+        return matched_img["out"] if matched_img is not None else node["false"]
+
+    def _run_branch_wait(self, node: dict) -> str | None:
+        """Polls until any image matches, then returns that image's own
+        "out" target - a branch_wait node has no "false" port to fall
+        through to (see module docstring), so a stop request while still
+        waiting is the only other way out (returns None, same dead-end
+        handling _run_loop() already gives any null port)."""
+        threshold = node["match_threshold"]
+        evaluate, update_overlay, clear_overlay = self._make_decision_helpers(
+            node, threshold, show_overlay=True,
+        )
+        poll_interval = node.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_MS) / 1000.0
+        while not self._stop_requested.is_set():
             frame = self._capture.get_latest_frame_bgr()
             matched_img, display_img, score = evaluate(frame)
             update_overlay(display_img, score)
-            if self._confirmation_mode:
-                self._await_confirmation("decision", {})
-            clear_overlay()
-            return matched_img["out"] if matched_img is not None else node["false"]
-
-        if mode == "wait_until_true":
-            poll_interval = node.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_MS) / 1000.0
-            while not self._stop_requested.is_set():
-                frame = self._capture.get_latest_frame_bgr()
-                matched_img, display_img, score = evaluate(frame)
-                update_overlay(display_img, score)
-                if matched_img is not None:
-                    if self._confirmation_mode:
-                        self._await_confirmation("decision", {})
-                    clear_overlay()
-                    return matched_img["out"]
-                self._stop_requested.wait(timeout=poll_interval)
-            clear_overlay()
-            return None
-
-        raise ValueError(f"unknown evaluation_mode: {mode}")
+            if matched_img is not None:
+                if self._confirmation_mode:
+                    self._await_confirmation("decision", {})
+                clear_overlay()
+                return matched_img["out"]
+            self._stop_requested.wait(timeout=poll_interval)
+        clear_overlay()
+        return None

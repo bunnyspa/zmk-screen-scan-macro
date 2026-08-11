@@ -8,20 +8,42 @@ so it could be unit-tested for the first time; that function and the
 NodeGraphQt-node-shaped input it read were removed once the web UI became
 the only app.
 
-The _ACTION_KEY_PRESS/_EVAL_MODE_BRANCH constants below are copies of the
-string values action_node.py/decision_node.py used to define (now gone
-along with those files) - graph_editor.js's own copies
-(ACTION_TYPE_KEY_PRESS/EVAL_MODE_BRANCH) must be kept in sync with these
-if either ever changes.
+The _ACTION_KEY_PRESS constant below is a copy of the string value
+action_node.py used to define (now gone along with that file) -
+graph_editor.js's own copy (ACTION_TYPE_KEY_PRESS) must be kept in sync
+with it if it ever changes.
+
+branch/branch_wait (formerly one "decision" node type with an
+evaluation_mode field) were split so a node's port shape - specifically,
+whether a trailing false port exists - is a fixed property of its type,
+not something that changes with a mutable per-instance mode; see
+engine/runner.py's module docstring for the full schema.
 """
 
 _ACTION_KEY_PRESS = 'Key Press'
-_EVAL_MODE_BRANCH = 'Branch (True/False)'
 
 
 def _first_connected_document_node(node, port_name):
     connections = (node.get('connections') or {}).get(port_name) or []
     return connections[0]['node'] if connections else None
+
+
+def _translate_decision_images(node, images):
+    """Shared by the 'branch'/'branch_wait' translations below - both
+    keep the exact same multi-image OR-matching shape (checked in list
+    order, first match wins, each image keeps its own 'out' target),
+    differing only in whether a 'false' port exists."""
+    return [
+        {
+            'reference_path': img['reference_path'],
+            'region': [
+                int(img['region_x']), int(img['region_y']),
+                int(img['region_w']), int(img['region_h']),
+            ],
+            'out': _first_connected_document_node(node, str(i + 1)),
+        }
+        for i, img in enumerate(images)
+    ]
 
 
 def build_engine_graph_from_document(graph_document):
@@ -61,29 +83,21 @@ def build_engine_graph_from_document(graph_document):
                 'out': _first_connected_document_node(node, 'out'),
             }
 
-        elif node_type == 'decision':
-            mode = properties.get('evaluation_mode')
-            images = properties.get('images') or []
-            entry = {
-                'type': 'decision',
-                'images': [
-                    {
-                        'reference_path': img['reference_path'],
-                        'region': [
-                            int(img['region_x']), int(img['region_y']),
-                            int(img['region_w']), int(img['region_h']),
-                        ],
-                        'out': _first_connected_document_node(node, str(i + 1)),
-                    }
-                    for i, img in enumerate(images)
-                ],
+        elif node_type == 'branch':
+            engine_nodes[node_id] = {
+                'type': 'branch',
+                'images': _translate_decision_images(node, properties.get('images') or []),
                 'match_threshold': float(properties.get('match_threshold', 0.85)),
-                'evaluation_mode': 'branch' if mode == _EVAL_MODE_BRANCH else 'wait_until_true',
+                'false': _first_connected_document_node(node, 'false'),
             }
-            if entry['evaluation_mode'] == 'branch':
-                entry['false'] = _first_connected_document_node(node, 'false')
-            else:
-                entry['poll_interval_ms'] = int(properties.get('poll_interval_ms', 200))  # matches graph_editor.js's own default
-            engine_nodes[node_id] = entry
+
+        elif node_type == 'branch_wait':
+            engine_nodes[node_id] = {
+                'type': 'branch_wait',
+                'images': _translate_decision_images(node, properties.get('images') or []),
+                'match_threshold': float(properties.get('match_threshold', 0.85)),
+                # matches graph_editor.js's own default
+                'poll_interval_ms': int(properties.get('poll_interval_ms', 200)),
+            }
 
     return {'start_node': start_node_id, 'nodes': engine_nodes}
