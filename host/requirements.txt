@@ -1,8 +1,0 @@
-hid>=1.0.6
-PyQt5
-opencv-python
-numpy
-windows-capture
-pytest
-pywebview
-PyQtWebEngine  # needed for pywebview's 'qt' GUI backend - see main.py's import-order comment
