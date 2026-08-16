@@ -509,6 +509,24 @@ function initGraphEditor(containerEl, onDirty) {
       nodeClickCandidate = null;
       return;
     }
+    // Touch/pen presses on a node suppress the browser's own compatibility
+    // mousedown/mouseup/click sequence for this pointer's gesture (a
+    // pointerdown's preventDefault() does this per the Pointer Events
+    // spec - the same mechanism FastClick and similar libraries rely on).
+    // Needed because openNodeEditor() (pointerup handler below) shows
+    // #node-editor-modal synchronously, before that trailing compat click
+    // arrives; without this, the click still fires afterward and hit-tests
+    // against whatever is now on screen at that position, not the canvas
+    // node actually pressed. Confirmed on-device as a real, destructive
+    // bug: pressing a Branch node - whose taller image-list form pushes
+    // Delete Node further down the vertically-centered modal-box than
+    // shorter forms do - could immediately delete the node it just opened.
+    // Left mouse alone: real mouse pointers don't get this synthesized
+    // compat-click treatment (pointerdown/mousedown/pointerup/mouseup/click
+    // are all genuine, independent events for a mouse), so there's nothing
+    // to suppress there, and preventDefault() on a real mousedown risks
+    // taking away default behavior (e.g. text selection) for no benefit.
+    if (event.pointerType !== 'mouse') event.preventDefault();
     const nodeId = nodeEl.id.replace('node-', '');
     nodeClickCandidate = { nodeId: nodeId, x: event.clientX, y: event.clientY, modifierHeld: event.ctrlKey || event.shiftKey };
     // Only arm the long-press-to-enter-selection-mode timer on mobile,
