@@ -4,19 +4,34 @@
   <meta charset="utf-8">
   <title>Screen Scan Macro - web UI skeleton</title>
   <style>
-    body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
-    #sidebar { width: 220px; border-right: 1px solid #ccc; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; }
-    #profile-list { flex: 1; overflow-y: auto; list-style: none; margin: 10px 0; padding: 0; }
+    body { font-family: sans-serif; margin: 0; height: 100vh; }
+    /* Profile switching is one centered popup, the same component at
+       every window width (no separate desktop-sidebar / mobile-drawer
+       split) - #profile-selector-toggle just opens
+       #profile-selector-modal, styled like the app's other two modals
+       (#image-editor-modal/#node-editor-modal, see their shared rules
+       below) rather than as an anchored dropdown - deliberately matching
+       their established look instead of introducing a third, different
+       overlay style, and giving more breathing room than a small
+       corner-anchored panel would have at mobile width. Same open/close-
+       via-explicit-button convention as those two modals (no
+       click-outside-closes-it - neither of them has that either). */
+    #profile-selector-toggle { margin: 10px; min-width: 200px; text-align: left; }
+    #profile-list { list-style: none; margin: 0 0 8px 0; padding: 0; max-height: 40vh; overflow-y: auto; }
     #profile-list li { padding: 6px 8px; cursor: pointer; border-radius: 4px; }
     #profile-list li:hover { background: #eee; }
     #profile-list li.selected { background: #cde; font-weight: bold; }
-    #sidebar button { margin-bottom: 4px; }
+    .profile-selector-actions { display: flex; flex-wrap: wrap; gap: 4px; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px; }
     /* min-height: 0 on the flex chain (#main -> #profile-form -> canvas) is
        load-bearing, not decorative - without it, a flex item's default
        min-height:auto stops it from ever shrinking below its content size,
        so #drawflow-canvas's flex:1 would be ignored and #main would just
-       overflow the window instead of the canvas actually filling it. */
-    #main { flex: 1; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; }
+       overflow the window instead of the canvas actually filling it.
+       #main is body's only child now (the old #sidebar is gone, replaced
+       by #profile-selector-toggle above), so it just fills the viewport
+       directly rather than being sized as a flex item in a row alongside
+       a sidebar. */
+    #main { height: 100vh; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; }
     #main label { display: block; margin-top: 10px; font-size: 13px; color: #333; }
     #main input[type=text] { width: 300px; }
     /* position: fixed (not in normal document flow) so showing/hiding this
@@ -38,8 +53,39 @@
     #profile-toolbar input[type=text] { width: 170px; }
     #profile-toolbar .profile-toolbar-divider { width: 1px; align-self: stretch; background: #ddd; }
 
-    #graph-toolbar { margin-top: 20px; }
+    #graph-toolbar { margin-top: 20px; display: flex; align-items: center; gap: 10px; }
+    /* "armed" = pickingStartNode is true (graph_editor.js) - the button is
+       mid-pick, next node clicked on the canvas becomes the start node. */
+    #set-start-node-btn.armed { background: #ff9800; color: white; border-color: #ff9800; }
     #drawflow-canvas { margin-top: 8px; width: 100%; flex: 1; min-height: 0; border: 1px solid #ccc; position: relative; overflow: hidden; }
+    /* Contextual action bar (see graph_editor.js's header comment -
+       Android's own "Contextual Action Bar" pattern) shown whenever a
+       node selection is active, on either layout: mobile enters one via
+       long press (timed by hand, since Drawflow's own node selection
+       fires immediately on any press, too early to tell long from
+       short), desktop via Ctrl/Shift-click - not gated by
+       body.mobile-width the way node sizing below is, since desktop
+       needs this just as much as mobile does. Fixed spot in the
+       canvas's own corner, not positioned over the pressed node itself,
+       which would need tracking its position through pan/zoom - see
+       BRANCH_THUMB_GAP-style measurement elsewhere in this app for how
+       much more that costs. Stacked vertically (not side by side) so
+       two buttons still fit without overlapping in that one corner.
+       #cab-count only ever has text in it for a 2+-node selection
+       (graph_editor.js's updateNodeActionCab()), so the single-select
+       case looks unchanged from before multi-select existed. */
+    #node-action-cab { display: none; position: absolute; right: 16px; bottom: 16px; z-index: 60; flex-direction: column; gap: 8px; align-items: flex-end; }
+    #node-action-cab.visible { display: flex; }
+    #node-action-cab button { padding: 10px 20px; font-size: 15px; border: none; border-radius: 24px; color: white; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); cursor: pointer; white-space: nowrap; }
+    #node-action-cab button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+    #cab-edit-btn { background: #1976d2; }
+    #cab-start-btn { background: #ff9800; }
+    #cab-count { background: rgba(0, 0, 0, 0.65); color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+    #cab-count:empty { display: none; }
+    /* Multi-select highlight (graph_editor.js's applyNodeSelectionHighlight()) -
+       distinct color from .is-start-node's orange so the two don't read
+       as the same thing on a node that happens to be both. */
+    .drawflow-node.multi-selected { border: 3px solid #1976d2 !important; box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4); }
     /* Drawflow's own defaults (.drawflow .drawflow-node { background: #0ff }
        / .selected { background: red }) - overridden here since both are
        hard on the eyes; !important needed since this <style> block loads
@@ -47,34 +93,48 @@
        there would otherwise win by source order. */
     .drawflow .drawflow-node { background: #f4f6f8 !important; }
     .drawflow .drawflow-node.selected { background: #d9e6f7 !important; }
-    .drawflow-node { width: 220px; }
-    .drawflow-node .node-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-    .drawflow-node .node-type-label { font-weight: bold; flex: 1; }
-    .drawflow-node .icon-btn { border: none; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; }
-    .drawflow-node .icon-btn:hover { background: #eee; border-radius: 3px; }
+    /* Drawflow's own right-click-shows-a-delete-"x" feature, suppressed
+       entirely - right-click isn't a usual mobile gesture, and
+       #node-editor-modal's own Delete Node button already covers the
+       same need on both widths, so this was redundant even on desktop.
+       CSS, not a JS intercept, since Drawflow creates this element
+       itself from inside its own contextmenu(e) method (confirmed via
+       source read) with no hook to prevent that - hiding the result is
+       simpler than fighting the creation. !important for the same
+       load-order reason as the two rules above. */
+    .drawflow-delete { display: none !important; }
+    /* Minimal node body: one text element, no buttons, no property fields
+       inline - those all live in #node-editor-modal (see graph_editor.js's
+       header comment). Two concrete size targets, switched by
+       body.mobile-width - set once from graph_editor.js's hardcoded
+       IS_MOBILE_LAYOUT constant, the same thing .node-label's own
+       content switches on (see renderMiniNodeHtml()): 64px showing the
+       full title/type-name text on desktop, 48px showing just its first
+       character on mobile. */
+    .drawflow-node { width: 64px; padding: 6px; box-sizing: border-box; }
+    .drawflow-node .node-label { font-size: 11px; line-height: 1.3; text-align: center; cursor: pointer; white-space: normal; word-break: break-word; }
+    /* 48x48, not 32-wide-by-Drawflow's-own-40-tall (what an earlier pass
+       left it at without ever setting an explicit height) - a proper
+       square, and 48px matches Material Design's touch-target minimum on
+       both axes instead of falling short on width the way 32px did. */
+    body.mobile-width .drawflow-node { width: 48px; height: 48px; padding: 4px; }
+    body.mobile-width .drawflow-node .node-label { font-size: 20px; }
     .drawflow-node.is-start-node { border: 3px solid #ff9800 !important; box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.4); }
-    .drawflow-node.is-start-node .set-start-btn { color: #ff9800; }
-    .drawflow-node label { display: block; font-size: 11px; margin: 4px 0; }
-    .drawflow-node input, .drawflow-node select { width: 100%; box-sizing: border-box; }
-    /* #main input[type=text] (below) sets a 300px width for the sidebar's
-       profile-name field; the key-capture input is the only input[type=text]
-       inside a node (X/Y/W/H are type=number, Button is a <select>) and its
-       #main-scoped selector otherwise wins on specificity over the rule
-       above, overflowing it out of the 220px node. */
-    #main .drawflow-node input[type=text] { width: 100%; }
-    /* Leaves room on the right for the port-aligned thumbnail column
-       (20px thumb + 4px gap, see BRANCH_THUMB_SIZE/BRANCH_THUMB_GAP in
-       graph_editor.js) so it doesn't sit on top of the form fields.
-       Shared by both Branch and Branch (Wait). */
-    .drawflow-node.branch-node .drawflow_content_node,
-    .drawflow-node.branch-wait-node .drawflow_content_node { padding-right: 28px; box-sizing: border-box; }
     /* top/right/bottom/left spelled out, not the `inset: 0` shorthand -
        QtWebEngine's bundled Chromium may be too old to support `inset`,
        which would silently drop this rule and leave the overlay in normal
        document flow (confirmed as the likely cause of thumbnails rendering
-       below the node instead of pinned to its ports). */
+       below the node instead of pinned to its ports). No overflow:hidden
+       here (nor on .drawflow-node itself, vendor CSS confirmed) - the
+       thumbnails are deliberately positioned outside the node's own box,
+       just past its output ports (see renderBranchNodeImageList()). */
     .drawflow-node .branch-thumb-overlay { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
     .drawflow-node .branch-node-thumb { position: absolute; width: 20px; height: 20px; object-fit: contain; background: #fff; border: 1px solid #ddd; }
+
+    /* #node-editor-modal's property form - same field look the node body
+       itself used to have before it moved into this popup. */
+    #node-editor-modal label { display: block; font-size: 12px; margin: 8px 0; }
+    #node-editor-modal input, #node-editor-modal select { width: 100%; box-sizing: border-box; }
 
     /* top/right/bottom/left spelled out, not the `inset: 0` shorthand -
        QtWebEngine's bundled Chromium doesn't support `inset` (confirmed
@@ -83,12 +143,23 @@
        collapses it to its default top-left position instead of covering
        the viewport (so align-items/justify-content centering had nothing
        to center within). */
-    #image-editor-modal { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
-    #image-editor-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
-    #image-editor-modal .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    #image-editor-modal .modal-header h3 { margin: 0; }
-    #image-editor-modal .modal-header button { border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 3px; }
-    #image-editor-modal .modal-header button:hover { background: #eee; }
+    /* #node-editor-modal and #profile-selector-modal share this same
+       overlay/box/header look. #node-editor-modal is the popup opened by
+       clicking a node's body, #image-editor-modal is opened from within
+       it via its "Edit Images..." button (a modal on top of a modal),
+       hence the higher z-index; #profile-selector-modal is independent
+       of both (opened from #profile-selector-toggle, reachable even with
+       no profile open), given the same mid-tier z-index as
+       #node-editor-modal since the two aren't expected to ever be open
+       together in practice. */
+    #image-editor-modal, #node-editor-modal, #profile-selector-modal { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, 0.5); display: none; align-items: center; justify-content: center; }
+    #node-editor-modal, #profile-selector-modal { z-index: 90; }
+    #image-editor-modal { z-index: 100; }
+    #image-editor-modal .modal-box, #node-editor-modal .modal-box, #profile-selector-modal .modal-box { background: white; color: #111; padding: 16px 20px; border-radius: 6px; width: 420px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+    #image-editor-modal .modal-header, #node-editor-modal .modal-header, #profile-selector-modal .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    #image-editor-modal .modal-header h3, #node-editor-modal .modal-header h3, #profile-selector-modal .modal-header h3 { margin: 0; }
+    #image-editor-modal .modal-header button, #node-editor-modal .modal-header button, #profile-selector-modal .modal-header button { border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 3px; }
+    #image-editor-modal .modal-header button:hover, #node-editor-modal .modal-header button:hover, #profile-selector-modal .modal-header button:hover { background: #eee; }
     .image-editor-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #eee; }
     .image-editor-thumb { width: 48px; height: 48px; object-fit: contain; background: #f4f4f4; border: 1px solid #ddd; }
     .image-editor-index { width: 28px; font-size: 12px; color: #555; }
@@ -102,15 +173,9 @@
   <link rel="stylesheet" href="vendor/drawflow/drawflow.min.css">
 </head>
 <body>
-  <div id="sidebar">
-    <button id="new-btn">+ New</button>
-    <ul id="profile-list"></ul>
-    <button id="rename-btn" disabled>Rename</button>
-    <button id="duplicate-btn" disabled>Duplicate</button>
-    <button id="delete-btn" disabled>Delete</button>
-  </div>
   <div id="main">
     <div id="error-bar"></div>
+    <button type="button" id="profile-selector-toggle">Select Profile ▾</button>
     <div id="profile-form" style="display:none;">
       <div id="profile-toolbar">
         <label>Target executable
@@ -139,9 +204,16 @@
 
       <div id="graph-toolbar">
         <button id="fit-view-btn">Fit to View</button>
-        <span style="margin-left: 10px; color: #777; font-size: 12px;">Right-click the canvas to add a node</span>
+        <button id="set-start-node-btn" title="Click, then click a node to make it the macro's start node">Set Start Node</button>
+        <span style="color: #777; font-size: 12px;">Right-click the canvas to add a node</span>
       </div>
-      <div id="drawflow-canvas"></div>
+      <div id="drawflow-canvas">
+        <div id="node-action-cab">
+          <span id="cab-count"></span>
+          <button type="button" id="cab-start-btn">★ Set as Start</button>
+          <button type="button" id="cab-edit-btn">Edit ✎</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -152,6 +224,22 @@
     <button type="button" data-node-type="branch_wait">+ Branch (Wait)</button>
   </div>
 
+  <div id="profile-selector-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Select Profile</h3>
+        <button type="button" id="profile-selector-close-btn">×</button>
+      </div>
+      <ul id="profile-list"></ul>
+      <div class="profile-selector-actions">
+        <button id="new-btn">+ New</button>
+        <button id="rename-btn" disabled>Rename</button>
+        <button id="duplicate-btn" disabled>Duplicate</button>
+        <button id="delete-btn" disabled>Delete</button>
+      </div>
+    </div>
+  </div>
+
   <div id="image-editor-modal">
     <div class="modal-box">
       <div class="modal-header">
@@ -160,6 +248,17 @@
       </div>
       <div id="image-editor-list"></div>
       <button type="button" id="image-editor-add-btn" style="margin-top: 10px;">+ Add Image...</button>
+    </div>
+  </div>
+
+  <div id="node-editor-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="node-editor-title">Edit Node</h3>
+        <button type="button" id="node-editor-close-btn">×</button>
+      </div>
+      <div id="node-editor-fields"></div>
+      <button type="button" id="node-editor-delete-btn" style="margin-top: 14px; color: #c0392b; border-color: #c0392b;">Delete Node</button>
     </div>
   </div>
 
@@ -205,6 +304,17 @@
       return window.confirm('Discard unsaved changes to ' + currentProfile + '?');
     }
 
+    // style.display, not a CSS class - matches the other two modals'
+    // (#image-editor-modal/#node-editor-modal, graph_editor.js's
+    // openImageEditor()/openNodeEditor() etc.) own open/close convention.
+    function openProfileSelector() {
+      document.getElementById('profile-selector-modal').style.display = 'flex';
+    }
+
+    function closeProfileSelector() {
+      document.getElementById('profile-selector-modal').style.display = 'none';
+    }
+
     async function refreshProfileList(selectName) {
       const names = await pywebview.api.list_profiles();
       const list = document.getElementById('profile-list');
@@ -220,6 +330,7 @@
       document.getElementById('rename-btn').disabled = !hasSelection;
       document.getElementById('duplicate-btn').disabled = !hasSelection;
       document.getElementById('delete-btn').disabled = !hasSelection;
+      document.getElementById('profile-selector-toggle').textContent = (hasSelection ? selectName : 'Select Profile') + ' ▾';
     }
 
     async function selectProfile(name) {
@@ -234,6 +345,7 @@
       }
 
       currentProfile = name;
+      closeProfileSelector(); // picking a profile is done - close the popup rather than leave it sitting open over the now-loaded graph
       // #profile-form (which contains the Drawflow canvas) must already be
       // visible before loadGraphDocument() runs - Drawflow computes each
       // connection's path from its port elements' real on-screen position,
@@ -411,6 +523,9 @@
         document.getElementById(id).addEventListener('input', function () { setDirty(true); });
         document.getElementById(id).addEventListener('change', function () { setDirty(true); });
       });
+
+      document.getElementById('profile-selector-toggle').addEventListener('click', openProfileSelector);
+      document.getElementById('profile-selector-close-btn').addEventListener('click', closeProfileSelector);
 
       initGraphEditor(document.getElementById('drawflow-canvas'), function () { setDirty(true); });
       document.getElementById('fit-view-btn').addEventListener('click', fitViewToNodes);

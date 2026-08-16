@@ -3,10 +3,100 @@
  * which this app deliberately has none of.
  *
  * Owns everything about *editing* the graph - node/port/connection
- * rendering, property fields (bound directly via Drawflow's df-*
- * attributes, no separate side panel), the exclusive "start node" flag,
- * and packaging/unpacking the GraphDocument JSON (index.html owns
- * save/load plumbing and calls the two exported functions below).
+ * rendering, property fields, the exclusive "start node" flag, and
+ * packaging/unpacking the GraphDocument JSON (index.html owns save/load
+ * plumbing and calls the two exported functions below).
+ *
+ * Nodes render minimally on the canvas - one text element, no property
+ * fields inline, no per-node buttons at all - so the graph stays readable
+ * at a glance even with many nodes on screen. Two size/content modes,
+ * picked by the IS_MOBILE_LAYOUT constant below: desktop shows a node's
+ * full display text (nodeDisplayText() - its own title if set, else the
+ * type's fixed label, e.g. "Action"); mobile shows just that text's
+ * first character, since there's no room for more.
+ *
+ * IS_MOBILE_LAYOUT is a hardcoded constant, NOT derived from the
+ * window/canvas's live rendered width - it used to be (an
+ * applyResponsiveMode() + ResizeObserver pair flipped it as the pywebview
+ * window was resized), but that meant a wide desktop window in "mobile"
+ * mode was reachable, which never actually happens in practice: this
+ * exact file is the one meant to be reused as-is in an Android WebView
+ * later (see android-screen-scan-macro's architecture.md) - each
+ * deployment is one environment, permanently, never a runtime choice a
+ * user makes by resizing something. This copy (zmk-screen-scan-macro's
+ * desktop app) hardcodes it `false`; the eventual Android copy hardcodes
+ * it `true` - a one-line edit at that point, not a config UI.
+ *
+ * Node press behavior: a short press opens the edit popup directly, on
+ * both layouts - same as tapping a file opens it in every mobile file
+ * browser (an earlier "tap only selects, a separate button opens" design
+ * put mobile's primary action behind an extra step for no real benefit;
+ * reverted). Multi-select has two *separate* entry gestures, one per
+ * layout, deliberately not shared code paths - long-press isn't a native
+ * desktop gesture (holding a mouse button for half a second reads as
+ * "stuck," not "select"), and Ctrl/Shift-click isn't available on touch
+ * at all:
+ * - Mobile: a *long* press (LONG_PRESS_MS, timed by hand via
+ *   initGraphEditor()'s mousedown/mousemove/mouseup trio - not
+ *   Drawflow's own node_selected/nodeSelected, which fires immediately
+ *   on any press regardless of duration and so can't distinguish long
+ *   from short) selects that one node (selectedNodeIds, selectNode()).
+ *   Deliberately not double-tap for this: touchscreen double-tap is a
+ *   documented pain point in at least one comparable node editor (n8n's
+ *   mobile web UI). Once a selection is active on mobile, any further
+ *   short press on *any* node (toggleNodeSelection()) adds or removes
+ *   it, no modifier needed (touch has none).
+ * - Desktop: Ctrl+click or Shift+click a node (checked at mousedown,
+ *   carried through nodeClickCandidate.modifierHeld to the paired
+ *   mouseup) toggles it into/out of the selection directly - the
+ *   standard desktop multi-select gesture (Explorer, Finder, etc.). A
+ *   plain click while a desktop selection is active does NOT toggle -
+ *   it opens that node directly and drops the existing selection first,
+ *   matching how a plain click elsewhere collapses a multi-select back
+ *   to one item in those same native file managers.
+ *
+ * #node-action-cab, the small floating contextual action bar shown
+ * whenever selectedNodeIds is non-empty - Android's own "Contextual
+ * Action Bar" pattern, rehearsed here for both entry gestures above, not
+ * just the mobile one it's named after - is NOT layout-gated the way
+ * node sizing is: a desktop Ctrl-click selection needs it to show just
+ * as much as a mobile long-press one does. Its Edit and Set as Start
+ * Node are only enabled for a single-node selection (both need exactly
+ * one target); multi-select has no action of its own yet beyond that
+ * disabling - a planned future "group selected nodes" action is the
+ * reason multi-select exists at all right now, not built today. A
+ * separate visual highlight (.multi-selected,
+ * applyNodeSelectionHighlight()) marks every selected node, since
+ * Drawflow's own native single-node 'selected' class (this.node_selected)
+ * can only ever mark one element and so can't represent a
+ * multi-selection on its own.
+ *
+ * The edit popup itself is one shared #node-editor-modal, populated with
+ * that node's full property form, including Delete Node and the
+ * free-text Title field; fields there are synced into node.data manually
+ * (editingNodeId + input listeners on the modal), NOT via Drawflow's own
+ * df-* auto-binding, since that binding only works for fields that are
+ * actual descendants of the node's own DOM element (see Drawflow's
+ * updateNodeValue()) - the df-* attribute naming is kept anyway, purely
+ * so each field's data key is still readable straight from its markup.
+ *
+ * There's no icon *picker* - a title's own first character standing in
+ * for a custom icon at mobile width (a user who wants a specific glyph
+ * types it as the first character of the title, e.g. an emoji) was a
+ * deliberate simplification over building a real emoji-picker widget -
+ * one fewer piece of UI, and the title field was going to exist
+ * regardless.
+ *
+ * The start node is no longer chosen by a per-node star toggle - a
+ * single "Set Start Node" toolbar button (index.html) arms a one-shot
+ * "next node you click becomes the start node" mode (pickingStartNode
+ * below), read by the same mousedown/mouseup click-detection pair that
+ * opens the edit popup.
+ *
+ * Title data itself is expected to still exist once this editor is
+ * ported to Android (it drives the mobile-layout glyph there too) - only
+ * the *full-text* desktop display is a Windows-only affordance, since
+ * Android will hardcode IS_MOBILE_LAYOUT true and never render it.
  *
  * Four node types: Action (click or key press), Wait (fixed delay),
  * Branch (check a reference image once, true/false), and Branch (Wait)
@@ -26,7 +116,9 @@
  * single shared modal (#image-editor-modal in index.html), repointed at
  * whichever node is open at a time (editingBranchNodeId) rather than one
  * dialog instance per node - this app only ever has one such dialog open
- * at once anyway.
+ * at once anyway. Its "Edit Images..." button now lives inside
+ * #node-editor-modal instead of the node itself, so it's opened via
+ * editingNodeId rather than the old event-delegation-from-node-DOM path.
  */
 
 // This string value must match graph_translation.py's _ACTION_KEY_PRESS
@@ -38,11 +130,73 @@ const ACTION_TYPE_CLICK = 'Click';
 const ACTION_TYPE_KEY_PRESS = 'Key Press';
 const MODIFIER_KEYS = ['Control', 'Alt', 'Shift', 'Meta'];
 
+const NODE_TYPE_LABELS = { action: 'Action', wait: 'Wait', branch: 'Branch', branch_wait: 'Branch (Wait)' };
+
+// Hardcoded per deployment, not derived from window/canvas width at
+// runtime - see this file's header comment for why. This copy (the
+// desktop app) is always `false`; change to `true` only in the eventual
+// Android WebView copy of this same file, never conditionally at
+// runtime here.
+const IS_MOBILE_LAYOUT = false;
+
+// Android's own long-press threshold (ViewConfiguration.getLongPressTimeout())
+// defaults to 500ms - matched here rather than picked arbitrarily, since
+// this is deliberately rehearsing that platform's touch conventions (see
+// this file's header comment). CLICK_MOVE_THRESHOLD_PX is mouse-tuned
+// (this app has no real touch input to test against yet) - a real
+// touchscreen's natural finger jitter may need a looser threshold; noted
+// here so it's not forgotten when this ports to Android.
+const LONG_PRESS_MS = 500;
+const CLICK_MOVE_THRESHOLD_PX = 4;
+
 let editor = null;
 let startNodeId = null;
 let nextSpawnOffset = 0;
 let editingBranchNodeId = null;
+let editingNodeId = null; // node currently open in #node-editor-modal, or null
+let nodeClickCandidate = null; // {nodeId, x, y, modifierHeld} - see initGraphEditor()'s mousedown/mousemove/mouseup trio
+let longPressTimer = null; // setTimeout handle for the pending long-press CAB, or null - see initGraphEditor()
+let longPressFired = false; // true once the timer above has fired for the current press, so mouseup knows not to also treat it as a short click
+let pickingStartNode = false; // armed by the "Set Start Node" toolbar button - see initSetStartNodeButton()
+// Node ids currently selected - entered via a mobile long press
+// (selectNode(), exactly one member) or a desktop Ctrl/Shift-click
+// (toggleNodeSelection() directly, see this file's header comment for
+// why the two layouts use separate entry gestures), then grown/shrunk
+// from there (mobile: any further short press; desktop: further
+// modifier-clicks). #node-action-cab is visible whenever this is
+// non-empty, on either layout; Edit/Set as Start are only enabled when
+// it holds exactly one id - see updateNodeActionCab(). Multi-select
+// itself has no action of its own yet beyond disabling those two
+// (grouping is a planned future use, not built today).
+let selectedNodeIds = new Set();
 let imageThumbnailUrls = {}; // reference_path -> data: URI, display-only, never saved
+let notifyDirty = function () {}; // set to initGraphEditor()'s onDirty param; module-level since #node-editor-modal's field listener isn't in that function's closure
+
+// HTML-escapes free text (the title field) before it's dropped into an
+// innerHTML string - node titles are user-authored and otherwise not
+// trusted content, this is not just cosmetic.
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// A node's full display text: its own title if set, otherwise the type's
+// fixed label ("Action", "Wait", ...) - shown in full at desktop width,
+// reduced to just its first character at mobile width (see
+// renderMiniNodeHtml()). Array.from(), not charAt/[0], so a single emoji
+// made of a surrogate pair - most common ones - survives as one whole
+// character at mobile width instead of a broken half-character.
+//
+// Note this means Branch and Branch (Wait) share the same first letter
+// ("B") when neither has a title set, so they're not visually
+// distinguishable from each other at mobile width alone - an accepted
+// rough edge of using the type label as the fallback, not something this
+// pass fixes; a real title sidesteps it.
+function nodeDisplayText(data, type) {
+  const title = ((data && data.title) || '').trim();
+  return title.length > 0 ? title : NODE_TYPE_LABELS[type];
+}
 
 function defaultActionProperties() {
   return {
@@ -65,13 +219,36 @@ function defaultBranchWaitProperties() {
   return { images: [], match_threshold: 0.85, poll_interval_ms: 200 };
 }
 
-function renderActionNodeHtml() {
+// Minimal on-canvas body for every node type: one text element, no
+// buttons. At desktop width it shows the node's full display text
+// (nodeDisplayText()); at mobile width, just that text's first
+// character, since there's no room for more. Property editing (title
+// included, and Delete Node) happens in the popup - see
+// renderEditFormHtml() and openNodeEditor(). Also used by
+// updateMiniNodeDisplay() to re-render a node's body in place after its
+// title changes, so this must stay a pure function of (type, data).
+function renderMiniNodeHtml(type, data) {
+  const text = nodeDisplayText(data, type);
+  const shown = IS_MOBILE_LAYOUT ? Array.from(text)[0] : text;
+  return '<div class="node-label" title="' + escapeHtml(NODE_TYPE_LABELS[type]) + ' - click to edit">' + escapeHtml(shown) + '</div>';
+}
+
+// Re-renders a node's on-canvas body in place - called after its title
+// changes in the edit popup, since the title drives the displayed text.
+// Only touches .drawflow_content_node (Drawflow's own wrapper for the
+// html passed to addNode()), not the whole node element, so the sibling
+// .branch-thumb-overlay (appended directly to the node, not inside that
+// wrapper - see ensureBranchThumbOverlay()) is untouched.
+function updateMiniNodeDisplay(nodeId) {
+  const nodeEl = document.getElementById('node-' + nodeId);
+  if (!nodeEl) return;
+  const node = editor.getNodeFromId(nodeId);
+  const contentEl = nodeEl.querySelector('.drawflow_content_node');
+  if (contentEl) contentEl.innerHTML = renderMiniNodeHtml(node.name, node.data);
+}
+
+function renderActionEditFormHtml() {
   return (
-    '<div class="node-header">' +
-      '<span class="node-type-label">Action</span>' +
-      '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
-      '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
-    '</div>' +
     '<label>Type' +
       '<select df-action_type>' +
         '<option value="' + ACTION_TYPE_CLICK + '">Click</option>' +
@@ -101,40 +278,38 @@ function renderActionNodeHtml() {
   );
 }
 
-function renderWaitNodeHtml() {
-  return (
-    '<div class="node-header">' +
-      '<span class="node-type-label">Wait</span>' +
-      '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
-      '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
-    '</div>' +
-    '<label>Duration (ms) <input type="number" df-duration_ms min="0"></label>'
-  );
+function renderWaitEditFormHtml() {
+  return '<label>Duration (ms) <input type="number" df-duration_ms min="0"></label>';
 }
 
-function renderBranchNodeHtml() {
+function renderBranchEditFormHtml() {
   return (
-    '<div class="node-header">' +
-      '<span class="node-type-label">Branch</span>' +
-      '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
-      '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
-    '</div>' +
     '<label>Match Threshold <input type="number" df-match_threshold min="0" max="1" step="0.01"></label>' +
     '<button type="button" class="edit-images-btn" style="margin-top: 6px;">Edit Images...</button>'
   );
 }
 
-function renderBranchWaitNodeHtml() {
+function renderBranchWaitEditFormHtml() {
   return (
-    '<div class="node-header">' +
-      '<span class="node-type-label">Branch (Wait)</span>' +
-      '<button type="button" class="icon-btn set-start-btn" title="Set as start node">☆</button>' +
-      '<button type="button" class="icon-btn delete-node-btn" title="Delete node">×</button>' +
-    '</div>' +
     '<label>Match Threshold <input type="number" df-match_threshold min="0" max="1" step="0.01"></label>' +
     '<label>Poll Interval (ms) <input type="number" df-poll_interval_ms min="10"></label>' +
     '<button type="button" class="edit-images-btn" style="margin-top: 6px;">Edit Images...</button>'
   );
+}
+
+// Title comes first and is shared by every node type - it drives the
+// node's on-canvas display text at every width (see nodeDisplayText()
+// and this file's header comment).
+function renderTitleFieldHtml() {
+  return '<label>Title <input type="text" df-title placeholder="Optional - shown in full at desktop width, first character only at mobile width"></label>';
+}
+
+function renderEditFormHtml(type) {
+  const typeFields = type === 'wait' ? renderWaitEditFormHtml()
+    : type === 'branch' ? renderBranchEditFormHtml()
+    : type === 'branch_wait' ? renderBranchWaitEditFormHtml()
+    : renderActionEditFormHtml();
+  return renderTitleFieldHtml() + typeFields;
 }
 
 function nextSpawnPosition() {
@@ -153,8 +328,7 @@ function updateActionFieldVisibility(nodeEl) {
   if (keyFields) keyFields.style.display = isClick ? 'none' : '';
 }
 
-const BRANCH_THUMB_SIZE = 20;
-const BRANCH_THUMB_GAP = 4;
+const BRANCH_THUMB_GAP = 4; // matches .branch-node-thumb's width in index.html's CSS
 
 function ensureBranchThumbOverlay(nodeEl) {
   let overlay = nodeEl.querySelector(':scope > .branch-thumb-overlay');
@@ -178,6 +352,14 @@ function ensureBranchThumbOverlay(nodeEl) {
 // space as the node itself (both live inside Drawflow's zoom/pan
 // transform, so a raw scaled pixel delta would double-apply the zoom
 // otherwise). Shared by both Branch and Branch (Wait).
+//
+// Placed just past the *right* edge of each port (not to its left, inside
+// the node) - the minimized node is only wide enough for its icon, with no
+// spare room for a thumbnail column inside it the way the old full-size
+// node had. The overlay div itself has no overflow:hidden (neither here
+// nor on Drawflow's own .drawflow-node, confirmed by reading
+// vendor/drawflow/drawflow.min.css), so positioning outside the node's own
+// box still renders correctly.
 function renderBranchNodeImageList(nodeId) {
   const nodeEl = document.getElementById('node-' + nodeId);
   if (!nodeEl) return;
@@ -192,7 +374,7 @@ function renderBranchNodeImageList(nodeId) {
     if (!portEl) return '';
     const portRect = portEl.getBoundingClientRect();
     const top = (portRect.top - nodeRect.top) / zoom;
-    const left = (portRect.left - nodeRect.left) / zoom - BRANCH_THUMB_SIZE - BRANCH_THUMB_GAP;
+    const left = (portRect.right - nodeRect.left) / zoom + BRANCH_THUMB_GAP;
     const thumbUrl = imageThumbnailUrls[image.reference_path] || '';
     return '<img class="branch-node-thumb" style="top: ' + top + 'px; left: ' + left + 'px;" ' +
       'src="' + thumbUrl + '" alt="" title="Image #' + (index + 1) + '">';
@@ -201,17 +383,14 @@ function renderBranchNodeImageList(nodeId) {
 
 function applyStartHighlight() {
   document.querySelectorAll('.drawflow-node').forEach(function (el) {
-    const isStart = startNodeId != null && el.id === 'node-' + startNodeId;
-    el.classList.toggle('is-start-node', isStart);
-    const btn = el.querySelector('.set-start-btn');
-    if (btn) btn.textContent = isStart ? '★' : '☆';
+    el.classList.toggle('is-start-node', startNodeId != null && el.id === 'node-' + startNodeId);
   });
 }
 
-function nodeIdFromEventTarget(target) {
-  const nodeEl = target.closest('.drawflow-node');
-  if (!nodeEl) return null;
-  return nodeEl.id.replace('node-', '');
+function setStartNode(nodeId) {
+  startNodeId = nodeId;
+  applyStartHighlight();
+  notifyDirty();
 }
 
 function keydownToCombo(event) {
@@ -230,51 +409,366 @@ function initGraphEditor(containerEl, onDirty) {
   editor = new Drawflow(containerEl);
   editor.reroute = true;
   editor.start();
+  notifyDirty = onDirty;
 
-  // Drawflow's own mousedown handler (bound to this same containerEl - see
-  // its `click(e)` method) treats any mousedown not on an INPUT/TEXTAREA/
-  // SELECT/contenteditable as the start of a node drag, which swallows
-  // clicks on any plain <button> in a node body (set-start/delete/edit-
-  // images) - confirmed via source read, not a guess. Intercepting in the
-  // capture phase (which always runs before Drawflow's bubble-phase
-  // listener on the same element, regardless of registration order) and
-  // stopping propagation keeps the click usable while never reaching
-  // Drawflow's drag/select logic.
+  // Nodes have no buttons of their own anymore (start/delete both moved
+  // out - see "Set Start Node" toolbar button and #node-editor-modal's
+  // Delete Node button), so the old capture-phase button-stopPropagation
+  // trick is gone too. What's left: record the mousedown position (and,
+  // for desktop's Ctrl/Shift-click multi-select entry, whether a
+  // modifier was held) for any mousedown that lands on a node's body but
+  // not a port, so the paired mouseup listener below can tell a plain
+  // click apart from a node drag - and, on mobile only, arm a long-press
+  // timer that enters selection mode (see selectNode()). A mousedown on
+  // genuinely empty canvas (not a node, not #node-action-cab) while a
+  // selection is active clears it entirely - same "click outside closes
+  // it" pattern as #graph-context-menu, but deliberately NOT triggered
+  // by a mousedown on another node, which needs to reach the mouseup
+  // handler below to toggle that node into/out of the selection instead.
   containerEl.addEventListener('mousedown', function (event) {
-    if (event.target.tagName === 'BUTTON') {
-      event.stopPropagation();
-    }
-  }, true);
+    const onCab = !!event.target.closest('#node-action-cab');
+    const nodeEl = event.target.closest('.drawflow-node');
+    const onPort = !!event.target.closest('.inputs, .outputs');
 
-  containerEl.addEventListener('click', function (event) {
-    if (event.target.classList.contains('set-start-btn')) {
-      const id = nodeIdFromEventTarget(event.target);
-      if (id != null) {
-        startNodeId = id;
-        applyStartHighlight();
-        onDirty();
-      }
-    } else if (event.target.classList.contains('delete-node-btn')) {
-      const id = nodeIdFromEventTarget(event.target);
-      if (id != null) {
-        if (editingBranchNodeId === id) closeImageEditor();
-        editor.removeNodeId('node-' + id);
-        if (startNodeId === id) startNodeId = null;
-        onDirty();
-      }
-    } else if (event.target.classList.contains('edit-images-btn')) {
-      const id = nodeIdFromEventTarget(event.target);
-      if (id != null) openImageEditor(id);
-    } else if (event.target.classList.contains('pick-click-region-btn')) {
-      const id = nodeIdFromEventTarget(event.target);
-      if (id != null) pickClickRegionFlow(id);
-    } else if (event.target.classList.contains('show-click-region-btn')) {
-      const id = nodeIdFromEventTarget(event.target);
-      if (id != null) showClickRegionFlow(id);
+    if (selectedNodeIds.size > 0 && !onCab && !nodeEl) hideNodeActionCab(); // pressed truly empty canvas while a selection was active
+
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    longPressFired = false;
+
+    if (!nodeEl || onPort) {
+      nodeClickCandidate = null;
+      return;
+    }
+    const nodeId = nodeEl.id.replace('node-', '');
+    nodeClickCandidate = { nodeId: nodeId, x: event.clientX, y: event.clientY, modifierHeld: event.ctrlKey || event.shiftKey };
+    // Only arm the long-press-to-enter-selection-mode timer on mobile,
+    // and only when nothing is selected yet - once a selection is
+    // already active, a long press wouldn't do anything different from
+    // a short one (see the mouseup handler below). Desktop never arms
+    // this at all; it enters/grows a selection via modifierHeld instead.
+    if (IS_MOBILE_LAYOUT && selectedNodeIds.size === 0) {
+      longPressTimer = setTimeout(function () {
+        longPressFired = true;
+        selectNode(nodeId);
+      }, LONG_PRESS_MS);
     }
   });
 
-  containerEl.addEventListener('keydown', function (event) {
+  // Movement past the click threshold mid-press means this is turning
+  // into a drag, not a tap or a long-press - cancels the pending
+  // long-press timer the same way lifting the pointer early would.
+  containerEl.addEventListener('mousemove', function (event) {
+    if (!nodeClickCandidate || longPressTimer == null) return;
+    if (Math.hypot(event.clientX - nodeClickCandidate.x, event.clientY - nodeClickCandidate.y) > CLICK_MOVE_THRESHOLD_PX) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  });
+
+  // A native 'click' event fires on mouseup regardless of how far the
+  // pointer moved in between, as long as it ends over the same element -
+  // and since a dragged node moves together with the pointer, it's still
+  // "the same element" at drag-end, so a plain click listener alone would
+  // pop the edit popup open after every single node drag too. Comparing
+  // mousedown/mouseup screen positions against a small pixel threshold is
+  // the standard fix. Also where pickingStartNode's one-shot pick lands:
+  // any mouseup while armed consumes the mode, whether or not it actually
+  // hit a node, so the button can't get stuck "on" forever.
+  //
+  // Three outcomes for a clean (non-drag) press on a node, in priority
+  // order - see this file's header comment for the full reasoning behind
+  // each:
+  // 1. Ctrl/Shift was held (modifierHeld, desktop's multi-select
+  //    gesture) - toggle that node's membership, regardless of whatever
+  //    else is or isn't already selected.
+  // 2. No modifier, but a selection is already active AND this is mobile
+  //    - toggle membership too (mobile has no modifier key to require;
+  //    once selectNode() has entered selection mode via long press,
+  //    every further short press just toggles).
+  // 3. Otherwise - open the popup directly, same as a plain tap opens a
+  //    file in every mobile file browser. If a desktop selection existed
+  //    (case 2 never applies there), drop it first - a plain click
+  //    elsewhere collapses a multi-select back to one item in every
+  //    native file manager that has both gestures.
+  containerEl.addEventListener('mouseup', function (event) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    const candidate = nodeClickCandidate;
+    nodeClickCandidate = null;
+    const wasLongPress = longPressFired;
+    longPressFired = false;
+    if (wasLongPress) return; // selectNode() already ran from the timer - nothing left to do on release
+
+    const nodeEl = candidate && event.target.closest('.drawflow-node');
+    const hitCandidate = !!(nodeEl && nodeEl.id.replace('node-', '') === candidate.nodeId
+      && Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y) <= CLICK_MOVE_THRESHOLD_PX);
+
+    if (pickingStartNode) {
+      if (hitCandidate) setStartNode(candidate.nodeId);
+      disarmPickStartNode();
+      return;
+    }
+    if (!hitCandidate) return;
+
+    if (candidate.modifierHeld || (IS_MOBILE_LAYOUT && selectedNodeIds.size > 0)) {
+      toggleNodeSelection(candidate.nodeId);
+    } else {
+      if (selectedNodeIds.size > 0) hideNodeActionCab();
+      openNodeEditor(candidate.nodeId);
+    }
+  });
+
+  editor.on('nodeCreated', function () { onDirty(); });
+  editor.on('nodeRemoved', function (id) {
+    // editor.removeNodeId() (called both by #node-editor-modal's Delete
+    // Node button and, in principle, anywhere else) never clears
+    // node_selected or fires nodeUnselected itself even when the removed
+    // node was the selected one - confirmed by reading Drawflow's own
+    // source, not assumed - so without this check a deleted-while-selected
+    // node would leave it in selectedNodeIds, pointing at a node id that
+    // no longer exists. Only drops that one id, not the whole selection -
+    // the rest of a multi-select stays intact.
+    if (selectedNodeIds.delete(String(id))) {
+      if (selectedNodeIds.size === 0) hideNodeActionCab();
+      else updateNodeActionCab();
+    }
+    onDirty();
+  });
+  editor.on('connectionCreated', function (payload) {
+    enforceSingleOutputConnection(payload);
+    onDirty();
+  });
+  editor.on('connectionRemoved', function () { onDirty(); });
+
+  // Drawflow's own 'contextmenu' event (see its contextmenu(e) method)
+  // already preventDefault()s the native browser menu; its own
+  // right-click-shows-a-delete-"x" behavior is suppressed entirely via
+  // CSS (index.html's `.drawflow-delete { display: none !important; }`)
+  // rather than here - right-click isn't a usual mobile gesture, and
+  // #node-editor-modal's own Delete Node button already covers the same
+  // need on both widths, so it was redundant even on desktop. Right-
+  // click on empty canvas to add a node is untouched, still useful on
+  // desktop and not the thing that was asked to go.
+  editor.on('contextmenu', function (e) {
+    if (!e.target.closest('.drawflow-node')) {
+      showGraphContextMenu(e.clientX, e.clientY);
+    }
+  });
+
+  initImageEditorModal();
+  initNodeEditorModal();
+  initSetStartNodeButton();
+  initNodeActionCab();
+  initGraphContextMenu();
+
+  // IS_MOBILE_LAYOUT is fixed for this deployment (see this file's header
+  // comment) - body's mobile-width class (index.html's CSS keys node
+  // sizing/the CAB off it) is set once here and never revisited, unlike
+  // the old width-measuring version of this that had to react to a
+  // resizable window.
+  document.body.classList.toggle('mobile-width', IS_MOBILE_LAYOUT);
+}
+
+// "Set Start Node": clicking the toolbar button arms pickingStartNode
+// (see the mouseup listener above for where the actual pick happens);
+// clicking it again while armed, or pressing Escape (see
+// initGraphContextMenu()), disarms it without picking anything.
+function armPickStartNode() {
+  pickingStartNode = true;
+  const btn = document.getElementById('set-start-node-btn');
+  if (btn) {
+    btn.classList.add('armed');
+    btn.textContent = 'Click a node...';
+  }
+}
+
+function disarmPickStartNode() {
+  pickingStartNode = false;
+  const btn = document.getElementById('set-start-node-btn');
+  if (btn) {
+    btn.classList.remove('armed');
+    btn.textContent = 'Set Start Node';
+  }
+}
+
+function initSetStartNodeButton() {
+  document.getElementById('set-start-node-btn').addEventListener('click', function () {
+    if (pickingStartNode) disarmPickStartNode();
+    else armPickStartNode();
+  });
+}
+
+// Toggles each node's own visual selection highlight (.multi-selected,
+// index.html) to match selectedNodeIds - needed because Drawflow's own
+// native single-node 'selected' class (this.node_selected) can only ever
+// mark one element at a time, which doesn't reflect a multi-selection at
+// all; this is a separate highlight this app owns, not a wrapper around
+// Drawflow's. Called from updateNodeActionCab()/hideNodeActionCab() -
+// every selectedNodeIds mutation path (selectNode(),
+// toggleNodeSelection(), the mousedown "clicked empty canvas" case, and
+// the 'nodeRemoved' handler) ends in one of those two, so this stays in
+// sync without repeating the call at every individual site.
+function applyNodeSelectionHighlight() {
+  document.querySelectorAll('.drawflow-node').forEach(function (el) {
+    el.classList.toggle('multi-selected', selectedNodeIds.has(el.id.replace('node-', '')));
+  });
+}
+
+// #node-action-cab: the contextual action bar shown whenever
+// selectedNodeIds is non-empty, on either layout - not gated by
+// body.mobile-width the way node sizing is, since desktop's own
+// Ctrl/Shift-click entry (see this file's header comment) needs it just
+// as much as mobile's long-press one does. Edit and Set as Start are
+// only enabled for a single-node selection - multi-select has no action
+// of its own yet (grouping, planned later, not built today). The
+// optional selection-count label only shows for 2+, so the common
+// single-select case looks exactly like before multi-select existed.
+function updateNodeActionCab() {
+  applyNodeSelectionHighlight();
+  const cab = document.getElementById('node-action-cab');
+  if (!cab) return;
+  cab.classList.add('visible');
+  const multi = selectedNodeIds.size > 1;
+  document.getElementById('cab-edit-btn').disabled = multi;
+  document.getElementById('cab-start-btn').disabled = multi;
+  const countEl = document.getElementById('cab-count');
+  if (countEl) countEl.textContent = multi ? selectedNodeIds.size + ' selected' : '';
+}
+
+// selectNode() (long press - always starts a fresh one-node selection)
+// and toggleNodeSelection() (short press once a selection is already
+// active - adds/removes one node) are the only two ways into a
+// selection; the empty-selection paths inside toggleNodeSelection() and
+// the 'nodeRemoved' handler, plus a mousedown on empty canvas, are the
+// only ways out, all funneling through hideNodeActionCab() below.
+function selectNode(nodeId) {
+  selectedNodeIds = new Set([nodeId]);
+  updateNodeActionCab();
+}
+
+function toggleNodeSelection(nodeId) {
+  if (!selectedNodeIds.delete(nodeId)) selectedNodeIds.add(nodeId);
+  if (selectedNodeIds.size === 0) hideNodeActionCab();
+  else updateNodeActionCab();
+}
+
+function hideNodeActionCab() {
+  selectedNodeIds = new Set();
+  applyNodeSelectionHighlight();
+  const cab = document.getElementById('node-action-cab');
+  if (cab) cab.classList.remove('visible');
+}
+
+function initNodeActionCab() {
+  document.getElementById('cab-edit-btn').addEventListener('click', function () {
+    if (selectedNodeIds.size === 1) openNodeEditor(Array.from(selectedNodeIds)[0]);
+    hideNodeActionCab();
+  });
+  document.getElementById('cab-start-btn').addEventListener('click', function () {
+    if (selectedNodeIds.size === 1) setStartNode(Array.from(selectedNodeIds)[0]);
+    hideNodeActionCab();
+  });
+}
+
+/* --- Node edit popup: one shared #node-editor-modal, repointed at
+ * whichever node is open (editingNodeId) - same pattern as the branch
+ * image editor's editingBranchNodeId. Fields are plain inputs/selects
+ * named via df-<key> attributes (kept only as a readable naming
+ * convention here, not for Drawflow's own auto-binding - see this file's
+ * header comment for why that binding doesn't reach into a modal). */
+
+// Reads a field's data key off whichever of its attributes starts with
+// "df-" - the attribute name itself varies per field (df-action_type,
+// df-duration_ms, ...), so this can't be a single known attribute-name
+// CSS selector; iterating the element's own attribute list is the direct
+// way to recover it.
+function dfFieldName(el) {
+  for (let i = 0; i < el.attributes.length; i++) {
+    const attr = el.attributes[i];
+    if (attr.name.indexOf('df-') === 0) return attr.name.slice(3);
+  }
+  return null;
+}
+
+function populateNodeEditorFields(data) {
+  document.querySelectorAll('#node-editor-fields input, #node-editor-fields select').forEach(function (el) {
+    const key = dfFieldName(el);
+    if (key == null) return;
+    const value = data[key];
+    if (value != null) el.value = value;
+  });
+}
+
+function openNodeEditor(nodeId) {
+  const node = editor.getNodeFromId(nodeId);
+  editingNodeId = nodeId;
+  document.getElementById('node-editor-title').textContent = NODE_TYPE_LABELS[node.name] || 'Edit Node';
+  const fieldsEl = document.getElementById('node-editor-fields');
+  fieldsEl.innerHTML = renderEditFormHtml(node.name);
+  populateNodeEditorFields(node.data);
+  if (node.name === 'action') updateActionFieldVisibility(fieldsEl);
+  document.getElementById('node-editor-modal').style.display = 'flex';
+}
+
+function closeNodeEditor() {
+  editingNodeId = null;
+  const modal = document.getElementById('node-editor-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function initNodeEditorModal() {
+  document.getElementById('node-editor-close-btn').addEventListener('click', closeNodeEditor);
+
+  // Delete Node replaces the old per-node "×" button - it lives outside
+  // fieldsEl (a fixed part of the modal, not the per-type dynamic form),
+  // same reasoning as #image-editor-modal's "+ Add Image..." button.
+  document.getElementById('node-editor-delete-btn').addEventListener('click', function () {
+    if (editingNodeId == null) return;
+    const id = editingNodeId;
+    if (editingBranchNodeId === id) closeImageEditor();
+    closeNodeEditor();
+    editor.removeNodeId('node-' + id);
+    if (startNodeId === id) startNodeId = null;
+    applyStartHighlight();
+    notifyDirty();
+  });
+
+  const fieldsEl = document.getElementById('node-editor-fields');
+
+  // Manual equivalent of Drawflow's own df-* auto-sync (see this file's
+  // header comment) - reads the field's df-<key> name, writes it into the
+  // node's data via the public updateNodeDataFromId() API (same one
+  // pickClickRegionFlow()/showClickRegionFlow() already use elsewhere in
+  // this file), and toggles Action's click-vs-key field visibility the
+  // same way the old inline binding did.
+  fieldsEl.addEventListener('input', function (event) {
+    if (editingNodeId == null) return;
+    const key = dfFieldName(event.target);
+    if (key == null) return;
+    const data = Object.assign({}, editor.getNodeFromId(editingNodeId).data);
+    data[key] = event.target.value;
+    editor.updateNodeDataFromId(editingNodeId, data);
+    if (event.target.matches('[df-action_type]')) updateActionFieldVisibility(fieldsEl);
+    if (key === 'title') updateMiniNodeDisplay(editingNodeId); // title drives the on-canvas display text too, see nodeDisplayText()
+    notifyDirty();
+  });
+
+  fieldsEl.addEventListener('click', function (event) {
+    if (editingNodeId == null) return;
+    if (event.target.classList.contains('edit-images-btn')) {
+      openImageEditor(editingNodeId);
+    } else if (event.target.classList.contains('pick-click-region-btn')) {
+      pickClickRegionFlow(editingNodeId);
+    } else if (event.target.classList.contains('show-click-region-btn')) {
+      showClickRegionFlow(editingNodeId);
+    }
+  });
+
+  // Key-combo capture for Action's Key Press field - moved here verbatim
+  // from the old containerEl-scoped listener, since the key-capture-input
+  // field now lives in this modal instead of inside the node's own DOM.
+  fieldsEl.addEventListener('keydown', function (event) {
     if (!event.target.classList.contains('key-capture-input')) return;
     event.preventDefault();
     if (event.key === 'Escape') {
@@ -286,41 +780,6 @@ function initGraphEditor(containerEl, onDirty) {
     }
     event.target.dispatchEvent(new Event('input', { bubbles: true }));
   });
-
-  // Drawflow's own container-wide 'input' listener (see updateNodeValue in
-  // its source) keeps df-* fields synced into node.data; on top of that we
-  // need the action-type select to toggle which fields are visible, and
-  // every field to mark the profile dirty.
-  containerEl.addEventListener('input', function (event) {
-    onDirty();
-    if (event.target.matches('[df-action_type]')) {
-      updateActionFieldVisibility(event.target.closest('.drawflow-node'));
-    }
-  });
-
-  editor.on('nodeCreated', function () { onDirty(); });
-  editor.on('nodeRemoved', function () { onDirty(); });
-  editor.on('connectionCreated', function (payload) {
-    enforceSingleOutputConnection(payload);
-    onDirty();
-  });
-  editor.on('connectionRemoved', function () { onDirty(); });
-
-  // Drawflow's own 'contextmenu' event (see its contextmenu(e) method)
-  // already preventDefault()s the native browser menu and, when the user
-  // had a node/connection selected, shows its own delete-"x" box - that's
-  // the existing "right-click a connection, click x to delete" behavior,
-  // untouched here. Only show our own node-creation menu when the right-
-  // click landed on genuinely empty canvas (not a node), so the two never
-  // fight over the same gesture.
-  editor.on('contextmenu', function (e) {
-    if (!e.target.closest('.drawflow-node')) {
-      showGraphContextMenu(e.clientX, e.clientY);
-    }
-  });
-
-  initImageEditorModal();
-  initGraphContextMenu();
 }
 
 // Converts a viewport point (e.g. a contextmenu event's clientX/clientY)
@@ -369,7 +828,9 @@ function initGraphContextMenu() {
     }
   });
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') hideGraphContextMenu();
+    if (event.key !== 'Escape') return;
+    hideGraphContextMenu();
+    if (pickingStartNode) disarmPickStartNode();
   });
 }
 
@@ -465,27 +926,28 @@ function enforceSingleOutputConnection(payload) {
 // mind (none currently) would fall back to the staggered default.
 function addActionNode(position) {
   const pos = position || nextSpawnPosition();
-  const id = editor.addNode(
+  const data = defaultActionProperties();
+  return editor.addNode(
     'action', 1, 1, pos.x, pos.y, 'action-node',
-    defaultActionProperties(), renderActionNodeHtml(),
+    data, renderMiniNodeHtml('action', data),
   );
-  updateActionFieldVisibility(document.getElementById('node-' + id));
-  return id;
 }
 
 function addWaitNode(position) {
   const pos = position || nextSpawnPosition();
+  const data = defaultWaitProperties();
   return editor.addNode(
     'wait', 1, 1, pos.x, pos.y, 'wait-node',
-    defaultWaitProperties(), renderWaitNodeHtml(),
+    data, renderMiniNodeHtml('wait', data),
   );
 }
 
 function addBranchNode(position) {
   const pos = position || nextSpawnPosition();
+  const data = defaultBranchProperties();
   const id = editor.addNode(
     'branch', 1, 1, pos.x, pos.y, 'branch-node', // 1 output: just 'false', 0 images
-    defaultBranchProperties(), renderBranchNodeHtml(),
+    data, renderMiniNodeHtml('branch', data),
   );
   renderBranchNodeImageList(id);
   return id;
@@ -493,9 +955,10 @@ function addBranchNode(position) {
 
 function addBranchWaitNode(position) {
   const pos = position || nextSpawnPosition();
+  const data = defaultBranchWaitProperties();
   const id = editor.addNode(
     'branch_wait', 1, 0, pos.x, pos.y, 'branch-wait-node', // 0 outputs, 0 images - no false port ever
-    defaultBranchWaitProperties(), renderBranchWaitNodeHtml(),
+    data, renderMiniNodeHtml('branch_wait', data),
   );
   renderBranchNodeImageList(id);
   return id;
@@ -506,6 +969,8 @@ function clearGraphEditor() {
   startNodeId = null;
   nextSpawnOffset = 0;
   closeImageEditor();
+  closeNodeEditor();
+  hideNodeActionCab(); // editor.clear() wipes Drawflow's own DOM/data but not our own CAB state - a stale one would survive a profile switch otherwise
 }
 
 // A profile saved by the old NodeGraphQt editor stores its graph as a
@@ -522,13 +987,6 @@ function graphDocumentIsCompatible(graph) {
   if (ids.length === 0) return true;
   const first = graph.nodes[ids[0]];
   return !!(first && Array.isArray(first.position) && typeof first.type === 'string');
-}
-
-function renderNodeHtml(type) {
-  if (type === 'wait') return renderWaitNodeHtml();
-  if (type === 'branch') return renderBranchNodeHtml();
-  if (type === 'branch_wait') return renderBranchWaitNodeHtml();
-  return renderActionNodeHtml();
 }
 
 /* GraphDocument (see engine/runner.py's module docstring for the engine-
@@ -554,11 +1012,9 @@ function loadGraphDocument(doc, imageThumbnails) {
     const numOutputs = node.type === 'branch' ? numImages + 1 : node.type === 'branch_wait' ? numImages : 1;
     const newId = editor.addNode(
       node.type, 1, numOutputs, node.position[0], node.position[1],
-      node.type.replace('_', '-') + '-node', Object.assign({}, node.properties), renderNodeHtml(node.type),
+      node.type.replace('_', '-') + '-node', Object.assign({}, node.properties), renderMiniNodeHtml(node.type, node.properties),
     );
     docIdToDrawflowId[docId] = newId;
-    const nodeEl = document.getElementById('node-' + newId);
-    if (node.type === 'action') updateActionFieldVisibility(nodeEl);
     if (isBranchFamily) renderBranchNodeImageList(newId);
   });
 
