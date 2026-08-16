@@ -513,6 +513,16 @@
       await pollRunState();
     }
 
+    // graph_editor.js's node-editor-delete-btn handler awaits this before
+    // deleting a node - a bare global it expects the host page to define,
+    // same contract as currentProfile above. window.confirm() works fine
+    // here (pywebview supports it natively); Android's own index.html
+    // supplies a custom-modal equivalent instead (WebView has no native
+    // confirm() without extra plumbing - see that file for why).
+    function confirmDeleteNode() {
+      return Promise.resolve(window.confirm('Delete this node? This cannot be undone.'));
+    }
+
     window.addEventListener('pywebviewready', function () {
       document.getElementById('new-btn').addEventListener('click', createProfile);
       document.getElementById('rename-btn').addEventListener('click', renameProfile);

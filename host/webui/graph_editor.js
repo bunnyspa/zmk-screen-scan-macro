@@ -177,6 +177,18 @@ let startNodeId = null;
 let nextSpawnOffset = 0;
 let editingBranchNodeId = null;
 let editingNodeId = null; // node currently open in #node-editor-modal, or null
+// openNodeEditor() shows #node-editor-modal synchronously, from inside this
+// file's own 'pointerup' handler - before the browser's own trailing click
+// event for that same press has fired. That click still arrives shortly
+// after (confirmed on-device via logging: ~7-14ms later, far too fast to be
+// a second deliberate tap) and hit-tests against whatever is now on screen
+// at that position, not the canvas node that was actually pressed - so it
+// can land on #node-editor-modal's own Delete Node button if that's what
+// ended up there. Raised by openNodeEditor(), checked and dropped by the
+// very next click #node-editor-modal sees (initNodeEditorModal()'s capture-
+// phase listener) - exactly one click swallowed per open, nothing time-
+// based, no click after that first one is ever touched.
+let suppressNextNodeEditorClick = false;
 let nodeClickCandidate = null; // {nodeId, x, y, modifierHeld} - see initGraphEditor()'s pointerdown/pointermove/pointerup trio
 let longPressTimer = null; // setTimeout handle for the pending long-press CAB, or null - see initGraphEditor()
 let longPressFired = false; // true once the timer above has fired for the current press, so pointerup knows not to also treat it as a short click
@@ -509,24 +521,6 @@ function initGraphEditor(containerEl, onDirty) {
       nodeClickCandidate = null;
       return;
     }
-    // Touch/pen presses on a node suppress the browser's own compatibility
-    // mousedown/mouseup/click sequence for this pointer's gesture (a
-    // pointerdown's preventDefault() does this per the Pointer Events
-    // spec - the same mechanism FastClick and similar libraries rely on).
-    // Needed because openNodeEditor() (pointerup handler below) shows
-    // #node-editor-modal synchronously, before that trailing compat click
-    // arrives; without this, the click still fires afterward and hit-tests
-    // against whatever is now on screen at that position, not the canvas
-    // node actually pressed. Confirmed on-device as a real, destructive
-    // bug: pressing a Branch node - whose taller image-list form pushes
-    // Delete Node further down the vertically-centered modal-box than
-    // shorter forms do - could immediately delete the node it just opened.
-    // Left mouse alone: real mouse pointers don't get this synthesized
-    // compat-click treatment (pointerdown/mousedown/pointerup/mouseup/click
-    // are all genuine, independent events for a mouse), so there's nothing
-    // to suppress there, and preventDefault() on a real mousedown risks
-    // taking away default behavior (e.g. text selection) for no benefit.
-    if (event.pointerType !== 'mouse') event.preventDefault();
     const nodeId = nodeEl.id.replace('node-', '');
     nodeClickCandidate = { nodeId: nodeId, x: event.clientX, y: event.clientY, modifierHeld: event.ctrlKey || event.shiftKey };
     // Only arm the long-press-to-enter-selection-mode timer on mobile,
@@ -808,6 +802,7 @@ function openNodeEditor(nodeId) {
   populateNodeEditorFields(node.data);
   if (node.name === 'action') updateActionFieldVisibility(fieldsEl);
   document.getElementById('node-editor-modal').style.display = 'flex';
+  suppressNextNodeEditorClick = true;
 }
 
 function closeNodeEditor() {
@@ -819,11 +814,32 @@ function closeNodeEditor() {
 function initNodeEditorModal() {
   document.getElementById('node-editor-close-btn').addEventListener('click', closeNodeEditor);
 
+  // Swallows exactly the one click described by suppressNextNodeEditorClick
+  // above - capture phase, on the modal itself, so this runs (and can
+  // stopPropagation()) before any of the modal's own bubble-phase button
+  // listeners (Close, Delete Node, etc.) see the same click.
+  document.getElementById('node-editor-modal').addEventListener('click', function (event) {
+    if (!suppressNextNodeEditorClick) return;
+    suppressNextNodeEditorClick = false;
+    event.stopPropagation();
+    event.preventDefault();
+  }, true);
+
   // Delete Node replaces the old per-node "×" button - it lives outside
   // fieldsEl (a fixed part of the modal, not the per-type dynamic form),
   // same reasoning as #image-editor-modal's "+ Add Image..." button.
-  document.getElementById('node-editor-delete-btn').addEventListener('click', function () {
+  // confirmDeleteNode() is a bare global this file expects the host page to
+  // define, same contract as currentProfile (see this file's header
+  // comment) - window.confirm() works natively on desktop (pywebview) but
+  // is a silent no-op in Android's WebView without a WebChromeClient
+  // override, so each platform's own index.html supplies its own
+  // implementation (desktop: window.confirm() directly; Android: a custom
+  // modal, same reason promptForName() exists there). Kept even with the
+  // ghost-click swallow above as a backstop against a real deliberate
+  // mis-tap.
+  document.getElementById('node-editor-delete-btn').addEventListener('click', async function () {
     if (editingNodeId == null) return;
+    if (!(await confirmDeleteNode())) return;
     const id = editingNodeId;
     if (editingBranchNodeId === id) closeImageEditor();
     closeNodeEditor();
