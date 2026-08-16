@@ -37,7 +37,7 @@
  * "stuck," not "select"), and Ctrl/Shift-click isn't available on touch
  * at all:
  * - Mobile: a *long* press (LONG_PRESS_MS, timed by hand via
- *   initGraphEditor()'s mousedown/mousemove/mouseup trio - not
+ *   initGraphEditor()'s pointerdown/pointermove/pointerup trio - not
  *   Drawflow's own node_selected/nodeSelected, which fires immediately
  *   on any press regardless of duration and so can't distinguish long
  *   from short) selects that one node (selectedNodeIds, selectNode()).
@@ -46,14 +46,37 @@
  *   mobile web UI). Once a selection is active on mobile, any further
  *   short press on *any* node (toggleNodeSelection()) adds or removes
  *   it, no modifier needed (touch has none).
- * - Desktop: Ctrl+click or Shift+click a node (checked at mousedown,
+ * - Desktop: Ctrl+click or Shift+click a node (checked at pointerdown,
  *   carried through nodeClickCandidate.modifierHeld to the paired
- *   mouseup) toggles it into/out of the selection directly - the
+ *   pointerup) toggles it into/out of the selection directly - the
  *   standard desktop multi-select gesture (Explorer, Finder, etc.). A
  *   plain click while a desktop selection is active does NOT toggle -
  *   it opens that node directly and drops the existing selection first,
  *   matching how a plain click elsewhere collapses a multi-select back
  *   to one item in those same native file managers.
+ *
+ * This click/long-press/drag detection trio is built on Pointer Events
+ * (pointerdown/pointermove/pointerup), not mouse events - found the hard
+ * way, not designed in up front. An earlier mousedown/mousemove/mouseup
+ * version worked perfectly on desktop (this app's only tested platform
+ * at the time) but silently couldn't work on a real Android WebView:
+ * mobile browsers don't dispatch a synthetic `mousedown` until *after*
+ * `touchend` fires, i.e. only once the finger has already lifted - so a
+ * long-press timer armed from `mousedown` could only ever start counting
+ * after the press was already over, making LONG_PRESS_MS's whole
+ * before-release detection impossible on touch (confirmed on a real
+ * device: long-pressing a node produced only Android's own native
+ * long-press haptic, never the CAB - see android-screen-scan-macro's
+ * docs/status.md for the on-device test that found this). Pointer Events
+ * fire promptly and identically for mouse, touch, and pen - switching to
+ * them fixes Android without changing desktop's behavior at all (a real
+ * mouse's pointerdown/pointerup fire at the same moments its
+ * mousedown/mouseup would have). This is *why* IS_MOBILE_LAYOUT can stay
+ * a single shared file with one flipped constant, despite that Android
+ * bug: the constant was always meant to capture genuine environment
+ * differences (sizing, text truncation), not gesture-detection
+ * plumbing - the plumbing just needed to stop being accidentally
+ * mouse-only.
  *
  * #node-action-cab, the small floating contextual action bar shown
  * whenever selectedNodeIds is non-empty - Android's own "Contextual
@@ -142,10 +165,10 @@ const IS_MOBILE_LAYOUT = false;
 // Android's own long-press threshold (ViewConfiguration.getLongPressTimeout())
 // defaults to 500ms - matched here rather than picked arbitrarily, since
 // this is deliberately rehearsing that platform's touch conventions (see
-// this file's header comment). CLICK_MOVE_THRESHOLD_PX is mouse-tuned
-// (this app has no real touch input to test against yet) - a real
-// touchscreen's natural finger jitter may need a looser threshold; noted
-// here so it's not forgotten when this ports to Android.
+// this file's header comment). CLICK_MOVE_THRESHOLD_PX has only been
+// confirmed workable on a real touchscreen at this value, not proven
+// optimal - a looser threshold may still turn out to feel better for
+// finger jitter than a mouse ever exercises, just not yet tested.
 const LONG_PRESS_MS = 500;
 const CLICK_MOVE_THRESHOLD_PX = 4;
 
@@ -154,9 +177,9 @@ let startNodeId = null;
 let nextSpawnOffset = 0;
 let editingBranchNodeId = null;
 let editingNodeId = null; // node currently open in #node-editor-modal, or null
-let nodeClickCandidate = null; // {nodeId, x, y, modifierHeld} - see initGraphEditor()'s mousedown/mousemove/mouseup trio
+let nodeClickCandidate = null; // {nodeId, x, y, modifierHeld} - see initGraphEditor()'s pointerdown/pointermove/pointerup trio
 let longPressTimer = null; // setTimeout handle for the pending long-press CAB, or null - see initGraphEditor()
-let longPressFired = false; // true once the timer above has fired for the current press, so mouseup knows not to also treat it as a short click
+let longPressFired = false; // true once the timer above has fired for the current press, so pointerup knows not to also treat it as a short click
 let pickingStartNode = false; // armed by the "Set Start Node" toolbar button - see initSetStartNodeButton()
 // Node ids currently selected - entered via a mobile long press
 // (selectNode(), exactly one member) or a desktop Ctrl/Shift-click
@@ -411,21 +434,67 @@ function initGraphEditor(containerEl, onDirty) {
   editor.start();
   notifyDirty = onDirty;
 
+  // Drawflow's own two-finger pinch handling (pointerdown_handler/
+  // pointermove_handler in vendor/drawflow/drawflow.min.js, confirmed by
+  // reading its source - no config option exposed for any of this) is
+  // disabled entirely on mobile, in favor of the WebView's own native
+  // pinch-zoom (GraphEditorActivity.kt's setBuiltInZoomControls(true) on
+  // Android; this file has no equivalent to disable on desktop, which
+  // doesn't have a native pinch gesture to conflict with anyway). Two
+  // confirmed-real problems, not hypothetical ones:
+  // 1. It applies a full zoom_in()/zoom_out() step (editor.zoom_value,
+  //    0.1 by default) on essentially every pointermove event during a
+  //    pinch once finger separation crosses a fixed 100px threshold, not
+  //    once per gesture - a real touchscreen fires many pointermove
+  //    events per second while pinching, so this compounds into a wildly
+  //    oversensitive zoom (confirmed on-device: "pinch-zoom is too
+  //    fast").
+  // 2. Independently and more fundamentally: Drawflow's touch-based pan
+  //    handler (position(), same file) unconditionally reads only
+  //    e.touches[0] on 'touchmove' - it has no awareness that a second
+  //    finger might be down for a pinch at all, so it keeps panning the
+  //    canvas off the first finger's movement throughout a pinch gesture,
+  //    fighting the zoom the whole time. Confirmed on-device ("most of
+  //    the time it feels like only one finger... is registered and only
+  //    panning is possible") - not a tunable, a real limitation in the
+  //    vendored library's own multitouch handling that only surfaces on
+  //    a real touchscreen (a mouse can't produce two simultaneous
+  //    pointers to begin with, so this was invisible on desktop).
+  // Only the pointer-based pinch listeners are cleared here (Drawflow
+  // assigns them via container.onpointerdown = ... property assignment,
+  // not addEventListener, so this can't also clear this file's own
+  // pointerdown/pointermove/pointerup listeners below, which are
+  // independently registered via addEventListener) - Drawflow's
+  // touchstart/touchmove/touchend-based single-finger drag-to-pan is left
+  // untouched and still works normally.
+  if (IS_MOBILE_LAYOUT) {
+    editor.container.onpointerdown = null;
+    editor.container.onpointermove = null;
+    editor.container.onpointerup = null;
+    editor.container.onpointercancel = null;
+    editor.container.onpointerout = null;
+    editor.container.onpointerleave = null;
+  }
+
   // Nodes have no buttons of their own anymore (start/delete both moved
   // out - see "Set Start Node" toolbar button and #node-editor-modal's
   // Delete Node button), so the old capture-phase button-stopPropagation
-  // trick is gone too. What's left: record the mousedown position (and,
+  // trick is gone too. What's left: record the pointerdown position (and,
   // for desktop's Ctrl/Shift-click multi-select entry, whether a
-  // modifier was held) for any mousedown that lands on a node's body but
-  // not a port, so the paired mouseup listener below can tell a plain
+  // modifier was held) for any pointerdown that lands on a node's body but
+  // not a port, so the paired pointerup listener below can tell a plain
   // click apart from a node drag - and, on mobile only, arm a long-press
-  // timer that enters selection mode (see selectNode()). A mousedown on
-  // genuinely empty canvas (not a node, not #node-action-cab) while a
-  // selection is active clears it entirely - same "click outside closes
-  // it" pattern as #graph-context-menu, but deliberately NOT triggered
-  // by a mousedown on another node, which needs to reach the mouseup
-  // handler below to toggle that node into/out of the selection instead.
-  containerEl.addEventListener('mousedown', function (event) {
+  // timer that enters selection mode (see selectNode()). Pointer Events,
+  // not mouse events - see this file's header comment for the real,
+  // on-device-confirmed reason (mobile browsers only synthesize
+  // `mousedown` after `touchend`, too late for a before-release long-press
+  // timer to mean anything). A pointerdown on genuinely empty canvas (not
+  // a node, not #node-action-cab) while a selection is active clears it
+  // entirely - same "click outside closes it" pattern as
+  // #graph-context-menu, but deliberately NOT triggered by a pointerdown
+  // on another node, which needs to reach the pointerup handler below to
+  // toggle that node into/out of the selection instead.
+  containerEl.addEventListener('pointerdown', function (event) {
     const onCab = !!event.target.closest('#node-action-cab');
     const nodeEl = event.target.closest('.drawflow-node');
     const onPort = !!event.target.closest('.inputs, .outputs');
@@ -445,7 +514,7 @@ function initGraphEditor(containerEl, onDirty) {
     // Only arm the long-press-to-enter-selection-mode timer on mobile,
     // and only when nothing is selected yet - once a selection is
     // already active, a long press wouldn't do anything different from
-    // a short one (see the mouseup handler below). Desktop never arms
+    // a short one (see the pointerup handler below). Desktop never arms
     // this at all; it enters/grows a selection via modifierHeld instead.
     if (IS_MOBILE_LAYOUT && selectedNodeIds.size === 0) {
       longPressTimer = setTimeout(function () {
@@ -458,7 +527,7 @@ function initGraphEditor(containerEl, onDirty) {
   // Movement past the click threshold mid-press means this is turning
   // into a drag, not a tap or a long-press - cancels the pending
   // long-press timer the same way lifting the pointer early would.
-  containerEl.addEventListener('mousemove', function (event) {
+  containerEl.addEventListener('pointermove', function (event) {
     if (!nodeClickCandidate || longPressTimer == null) return;
     if (Math.hypot(event.clientX - nodeClickCandidate.x, event.clientY - nodeClickCandidate.y) > CLICK_MOVE_THRESHOLD_PX) {
       clearTimeout(longPressTimer);
@@ -466,15 +535,15 @@ function initGraphEditor(containerEl, onDirty) {
     }
   });
 
-  // A native 'click' event fires on mouseup regardless of how far the
+  // A native 'click' event fires on pointerup regardless of how far the
   // pointer moved in between, as long as it ends over the same element -
   // and since a dragged node moves together with the pointer, it's still
   // "the same element" at drag-end, so a plain click listener alone would
   // pop the edit popup open after every single node drag too. Comparing
-  // mousedown/mouseup screen positions against a small pixel threshold is
-  // the standard fix. Also where pickingStartNode's one-shot pick lands:
-  // any mouseup while armed consumes the mode, whether or not it actually
-  // hit a node, so the button can't get stuck "on" forever.
+  // pointerdown/pointerup screen positions against a small pixel threshold
+  // is the standard fix. Also where pickingStartNode's one-shot pick
+  // lands: any pointerup while armed consumes the mode, whether or not it
+  // actually hit a node, so the button can't get stuck "on" forever.
   //
   // Three outcomes for a clean (non-drag) press on a node, in priority
   // order - see this file's header comment for the full reasoning behind
@@ -491,7 +560,7 @@ function initGraphEditor(containerEl, onDirty) {
   //    (case 2 never applies there), drop it first - a plain click
   //    elsewhere collapses a multi-select back to one item in every
   //    native file manager that has both gestures.
-  containerEl.addEventListener('mouseup', function (event) {
+  containerEl.addEventListener('pointerup', function (event) {
     clearTimeout(longPressTimer);
     longPressTimer = null;
     const candidate = nodeClickCandidate;
@@ -592,8 +661,20 @@ function disarmPickStartNode() {
   }
 }
 
+// #set-start-node-btn is optional, not guaranteed to exist in every host
+// page - android-screen-scan-macro's copy of index.html drops it entirely
+// (its arm-then-tap-any-node flow is redundant there with
+// #node-action-cab's own "Set as Start" button, reachable via long-press
+// on mobile), relying only on setStartNode() being called from the CAB
+// instead. Guarded here so that omission doesn't throw and abort the rest
+// of initGraphEditor() - pickingStartNode/armPickStartNode()/
+// disarmPickStartNode() stay as dead-but-harmless code on a page with no
+// button to trigger them, kept only so the toolbar button could come back
+// on either platform without further JS changes.
 function initSetStartNodeButton() {
-  document.getElementById('set-start-node-btn').addEventListener('click', function () {
+  const btn = document.getElementById('set-start-node-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
     if (pickingStartNode) disarmPickStartNode();
     else armPickStartNode();
   });
