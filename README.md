@@ -1,10 +1,15 @@
 # zmk-screen-scan-macro
 
-A [ZMK](https://zmk.dev) module + Windows desktop app, bundled together: the
-desktop app captures a target window and walks a graph of Action/Decision/Wait
-nodes you build, sending commands to the firmware over Raw HID; the firmware
-emits the actual keyboard/mouse HID reports — real hardware input, not
-OS-level injection.
+> **⚠️ In development.** The companion desktop app this module depends on
+> to be useful is not yet available.
+
+A [ZMK](https://zmk.dev) module: this firmware alone just exposes two
+behaviors (`&ssm_tog` / `&ssm_confirm`) and a Raw HID listener. The actual
+macro logic - capturing a target window, walking a graph of
+Action/Decision/Wait nodes, sending commands over Raw HID - lives in a
+companion desktop app that's currently in development and not yet
+available. The firmware emits the actual keyboard/mouse HID reports once
+commanded — real hardware input, not OS-level injection.
 
 - Action / Decision / Wait node graph, with cycles allowed (retry/re-check loops)
 - Decision nodes match a masked reference image against the live captured window
@@ -73,14 +78,9 @@ Bind `&ssm_tog` and `&ssm_confirm` to keys of your choice in your keymap layers.
 
 ### Host app
 
-```bash
-pip install -r host/requirements.txt
-python host/main.py
-```
-
-Without it, the firmware compiles in and the physical keys broadcast their
-triggers, but nothing is listening on the other end — no commands are ever
-sent back.
+Not available yet - in development. Without it, the firmware compiles in
+and the physical keys broadcast their triggers, but nothing is listening
+on the other end — no commands are ever sent back.
 
 ## Parameters
 
@@ -94,6 +94,9 @@ Raw HID marker byte, keyboard → host trigger channel (`&ssm_tog` /
 `&ssm_confirm`). Same caveat as above.
 
 ## Using the desktop app
+
+Describes the app's intended usage once it's available - not usable yet,
+see "Host app" above.
 
 1. Create a profile and set its target window title.
 2. Build a graph — Action (click or key press), Decision (match a masked
