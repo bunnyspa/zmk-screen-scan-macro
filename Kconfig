@@ -1,6 +1,7 @@
 config ZMK_SCREEN_SCAN_MACRO
     bool "Screen Scan Macro - host-driven HID relay"
     depends on RAW_HID
+    select ZMK_POINTING
     default n
     help
       Receives action commands from the host screen-scan-macro engine over
@@ -8,6 +9,10 @@ config ZMK_SCREEN_SCAN_MACRO
       reports. Also provides the &ssm_pp/&ssm_stop behaviors, which
       broadcast a Play/Pause/Resume trigger and a Stop trigger to the host
       over the same transport (marker 0x4E).
+
+      Selects ZMK_POINTING: the mouse-report HID calls this module makes
+      (zmk_hid_mouse_*, zmk_endpoints_send_mouse_report) only exist when
+      it's enabled.
 
       Requires zmk,behavior-ssm-pp and zmk,behavior-ssm-stop devicetree nodes (see docs/wire-protocol.md).
       Pair with the zmk-screen-scan-macro host application running on the
