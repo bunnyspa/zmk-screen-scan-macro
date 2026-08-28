@@ -1,0 +1,7 @@
+# Screen Scan Macro - smart Play/Pause/Resume behavior
+
+description: Resumes if the screen-scan-macro host engine is paused, pauses it if it's running, or starts a fresh run if stopped - over Raw HID
+
+compatible: "zmk,behavior-ssm-pp"
+
+include: zero_param.yaml

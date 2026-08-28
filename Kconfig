@@ -5,10 +5,11 @@ config ZMK_SCREEN_SCAN_MACRO
     help
       Receives action commands from the host screen-scan-macro engine over
       Raw HID (marker 0x4D) and emits them as real keyboard/mouse HID
-      reports. Also provides the &ssm_tog behavior, which broadcasts a
-      start/stop toggle to the host over the same transport (marker 0x4E).
+      reports. Also provides the &ssm_pp/&ssm_stop behaviors, which
+      broadcast a Play/Pause/Resume trigger and a Stop trigger to the host
+      over the same transport (marker 0x4E).
 
-      Requires a zmk,behavior-ssm-tog devicetree node (see docs/wire-protocol.md).
+      Requires zmk,behavior-ssm-pp and zmk,behavior-ssm-stop devicetree nodes (see docs/wire-protocol.md).
       Pair with the zmk-screen-scan-macro host application running on the
       connected PC. Central half only, same as other Raw HID consumers.
 

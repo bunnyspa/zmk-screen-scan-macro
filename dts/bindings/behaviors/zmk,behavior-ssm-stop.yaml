@@ -1,0 +1,7 @@
+# Screen Scan Macro - stop behavior
+
+description: Ends the screen-scan-macro host engine's run entirely (a no-op if nothing is running) over Raw HID
+
+compatible: "zmk,behavior-ssm-stop"
+
+include: zero_param.yaml

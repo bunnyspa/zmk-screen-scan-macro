@@ -12,10 +12,10 @@
 
 LOG_MODULE_REGISTER(screen_scan_macro, CONFIG_ZMK_LOG_LEVEL);
 
-#define DT_DRV_COMPAT zmk_behavior_ssm_tog
+#define DT_DRV_COMPAT zmk_behavior_ssm_pp
 
 #if !DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
-#error "Add a zmk,behavior-ssm-tog node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
+#error "Add a zmk,behavior-ssm-pp node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
 #endif
 
 /* ---- Host -> keyboard: action command listener
@@ -176,7 +176,7 @@ ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
  * one (byte 2 - a trigger-type discriminator so every keyboard->host
  * stateless trigger shares one marker instead of consuming a new one each
  * time). The host owns all the actual state (running/stopped,
- * pending-confirmation), avoiding independent firmware-side state that
+ * paused/resumed), avoiding independent firmware-side state that
  * could ever drift out of sync (e.g. after a firmware reboot or
  * reconnect). */
 
@@ -185,8 +185,8 @@ ZMK_SUBSCRIPTION(screen_scan_macro, raw_hid_received_event);
 #define SSM_TRIGGER_PACKET_SIZE 32
 
 enum ssm_trigger_type {
-    SSM_TRIGGER_TOG = 0x00,     /* &ssm_tog - start/stop the host engine */
-    SSM_TRIGGER_CONFIRM = 0x01, /* &ssm_confirm - confirm a pending action */
+    SSM_TRIGGER_PP = 0x00,   /* &ssm_pp - smart Play/Pause/Resume */
+    SSM_TRIGGER_STOP = 0x01, /* &ssm_stop - stop the run */
 };
 
 static void send_trigger(uint8_t trigger_type) {
@@ -199,49 +199,49 @@ static void send_trigger(uint8_t trigger_type) {
         (struct raw_hid_sent_event){.data = packet, .length = sizeof(packet)});
 }
 
-static int ssm_tog_pressed(struct zmk_behavior_binding *binding,
+static int ssm_pp_pressed(struct zmk_behavior_binding *binding,
+                           struct zmk_behavior_binding_event event) {
+    send_trigger(SSM_TRIGGER_PP);
+    return ZMK_BEHAVIOR_OPAQUE;
+}
+
+static int ssm_pp_released(struct zmk_behavior_binding *binding,
                             struct zmk_behavior_binding_event event) {
-    send_trigger(SSM_TRIGGER_TOG);
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
-static int ssm_tog_released(struct zmk_behavior_binding *binding,
-                             struct zmk_behavior_binding_event event) {
-    return ZMK_BEHAVIOR_OPAQUE;
-}
-
-static const struct behavior_driver_api ssm_tog_driver_api = {
-    .binding_pressed = ssm_tog_pressed,
-    .binding_released = ssm_tog_released,
+static const struct behavior_driver_api ssm_pp_driver_api = {
+    .binding_pressed = ssm_pp_pressed,
+    .binding_released = ssm_pp_released,
 };
 
 BEHAVIOR_DT_INST_DEFINE(0, NULL, NULL, NULL, NULL, POST_KERNEL,
-                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_tog_driver_api);
+                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_pp_driver_api);
 
-/* &ssm_confirm - same trigger channel, different trigger type. */
+/* &ssm_stop - same trigger channel, different trigger type. */
 
 #undef DT_DRV_COMPAT
-#define DT_DRV_COMPAT zmk_behavior_ssm_confirm
+#define DT_DRV_COMPAT zmk_behavior_ssm_stop
 
 #if !DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
-#error "Add a zmk,behavior-ssm-confirm node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
+#error "Add a zmk,behavior-ssm-stop node (see docs/wire-protocol.md) to enable CONFIG_ZMK_SCREEN_SCAN_MACRO."
 #endif
 
-static int ssm_confirm_pressed(struct zmk_behavior_binding *binding,
-                                struct zmk_behavior_binding_event event) {
-    send_trigger(SSM_TRIGGER_CONFIRM);
+static int ssm_stop_pressed(struct zmk_behavior_binding *binding,
+                             struct zmk_behavior_binding_event event) {
+    send_trigger(SSM_TRIGGER_STOP);
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
-static int ssm_confirm_released(struct zmk_behavior_binding *binding,
-                                 struct zmk_behavior_binding_event event) {
+static int ssm_stop_released(struct zmk_behavior_binding *binding,
+                              struct zmk_behavior_binding_event event) {
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
-static const struct behavior_driver_api ssm_confirm_driver_api = {
-    .binding_pressed = ssm_confirm_pressed,
-    .binding_released = ssm_confirm_released,
+static const struct behavior_driver_api ssm_stop_driver_api = {
+    .binding_pressed = ssm_stop_pressed,
+    .binding_released = ssm_stop_released,
 };
 
 BEHAVIOR_DT_INST_DEFINE(0, NULL, NULL, NULL, NULL, POST_KERNEL,
-                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_confirm_driver_api);
+                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &ssm_stop_driver_api);

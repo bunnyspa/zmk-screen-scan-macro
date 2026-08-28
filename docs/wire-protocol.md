@@ -47,7 +47,7 @@ Marker `0x4E` by default - configurable via `CONFIG_ZMK_SCREEN_SCAN_MACRO_TRIGGE
 constant to match by hand). Stateless - firmware doesn't track any state at
 all, it just fires this on every press of a trigger key, with byte 2
 identifying which one. The host owns all the actual state (running/stopped,
-pending-confirmation), flipping/resolving it once per event received. This
+paused/resumed), acting on it once per event received. This
 avoids independent firmware-side state ever drifting out of sync with the
 host, e.g. after a firmware reboot or reconnect.
 
@@ -55,7 +55,7 @@ host, e.g. after a firmware reboot or reconnect.
 |---|---|---|
 | 0 | Marker | `0x4E` |
 | 1 | Protocol version | `0x01`. Host drops packets from an unrecognized version, never attempts to interpret them. |
-| 2 | Trigger type | `0x00` = `&ssm_tog` (start/stop), `0x01` = `&ssm_confirm` (confirm a pending action) |
+| 2 | Trigger type | `0x00` = `&ssm_pp` (smart Play/Pause/Resume - resumes if paused, pauses if running, starts a fresh run otherwise), `0x01` = `&ssm_stop` (always ends the run, no-op if nothing running) |
 | 3-31 | Reserved | zero-padded, no meaningful payload |
 
 ## Breaking-change discipline

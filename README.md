@@ -4,7 +4,7 @@
 > to be useful is not yet available.
 
 A [ZMK](https://zmk.dev) module: this firmware alone just exposes two
-behaviors (`&ssm_tog` / `&ssm_confirm`) and a Raw HID listener. The actual
+behaviors (`&ssm_pp` / `&ssm_stop`) and a Raw HID listener. The actual
 macro logic - capturing a target window, walking a graph of
 Action/Decision/Wait nodes, sending commands over Raw HID - lives in a
 companion desktop app that's currently in development and not yet
@@ -13,9 +13,9 @@ commanded — real hardware input, not OS-level injection.
 
 - Action / Decision / Wait node graph, with cycles allowed (retry/re-check loops)
 - Decision nodes match a masked reference image against the live captured window
-- Confirmation mode — pause before each click/key-press for a manual OK
-- `&ssm_tog` / `&ssm_confirm` physical keys mirror the desktop app's Run/Stop
-  and Confirm controls
+- Per-node breakpoints — pause before a flagged click/key-press/decision, resume when ready
+- `&ssm_pp` / `&ssm_stop` physical keys mirror the desktop app's own
+  Play/Pause/Resume and Stop controls
 
 ## Getting Started
 
@@ -62,19 +62,19 @@ On split keyboards, enable these only on the central half (Raw HID lives on cent
 
 ```c
 behaviors {
-    ssm_tog: screen_scan_macro_toggle {
-        compatible = "zmk,behavior-ssm-tog";
+    ssm_pp: screen_scan_macro_play_pause {
+        compatible = "zmk,behavior-ssm-pp";
         #binding-cells = <0>;
     };
 
-    ssm_confirm: screen_scan_macro_confirm {
-        compatible = "zmk,behavior-ssm-confirm";
+    ssm_stop: screen_scan_macro_stop {
+        compatible = "zmk,behavior-ssm-stop";
         #binding-cells = <0>;
     };
 };
 ```
 
-Bind `&ssm_tog` and `&ssm_confirm` to keys of your choice in your keymap layers.
+Bind `&ssm_pp` and `&ssm_stop` to keys of your choice in your keymap layers.
 
 ### Host app
 
@@ -90,8 +90,8 @@ resolve a collision with another Raw HID listener sharing the transport;
 the host app's marker constant must be updated to match by hand.
 
 **`CONFIG_ZMK_SCREEN_SCAN_MACRO_TRIGGER_MARKER`** *(hex, default `0x4E`)* —
-Raw HID marker byte, keyboard → host trigger channel (`&ssm_tog` /
-`&ssm_confirm`). Same caveat as above.
+Raw HID marker byte, keyboard → host trigger channel (`&ssm_pp` /
+`&ssm_stop`). Same caveat as above.
 
 ## Using the desktop app
 
@@ -102,9 +102,11 @@ see "Host app" above.
 2. Build a graph — Action (click or key press), Decision (match a masked
    reference image, branch or wait-until-true), Wait (fixed delay) — wired
    together; cycles are allowed for retry/re-check loops.
-3. Turn on Confirmation mode (per profile) to pause before every
-   click/key-press until you hit OK or press `&ssm_confirm`.
-4. Hit Run, or press `&ssm_tog` on the keyboard — same control either way.
+3. Flag a node as a breakpoint (per node) to pause and preview it before it
+   fires - Resume (in-app, or `&ssm_pp` while paused) continues past it.
+4. Hit Run, or press `&ssm_pp` on the keyboard when nothing's running -
+   same control either way. `&ssm_pp` also doubles as Pause/Resume while a
+   run is active; `&ssm_stop` always ends the run outright.
 
 Focus policy (per profile) controls what happens if the target window loses
 focus mid-run: pause until refocused, or grab focus and resume automatically.
