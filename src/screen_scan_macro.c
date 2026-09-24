@@ -34,6 +34,7 @@ enum ssm_action_type {
     SSM_ACTION_MOUSE_MOVE = 0x05,
     SSM_ACTION_MOUSE_BUTTON_DOWN = 0x06,
     SSM_ACTION_MOUSE_BUTTON_UP = 0x07,
+    SSM_ACTION_MOUSE_SCROLL = 0x08,
 };
 
 static uint8_t last_cmd_seq = 0xFF; /* sentinel: no packet processed yet */
@@ -87,6 +88,14 @@ static void apply_mouse_move(int16_t dx, int16_t dy) {
     zmk_hid_mouse_movement_set(dx, dy);
     zmk_endpoints_send_mouse_report();
     zmk_hid_mouse_movement_set(0, 0);
+}
+
+/* One wheel step, like apply_mouse_move: set, send, clear. Positive y scrolls up (away from the user), positive x
+ * scrolls right; the size of one unit is whatever ZMK's mouse report resolution makes it. */
+static void apply_mouse_scroll(int16_t x, int16_t y) {
+    zmk_hid_mouse_scroll_set(x, y);
+    zmk_endpoints_send_mouse_report();
+    zmk_hid_mouse_scroll_set(0, 0);
 }
 
 static void apply_mouse_button_down(uint8_t buttons) {
@@ -145,6 +154,9 @@ static void apply_command(const uint8_t *data, uint8_t length) {
         break;
     case SSM_ACTION_MOUSE_BUTTON_UP:
         apply_mouse_button_up(mouse_buttons);
+        break;
+    case SSM_ACTION_MOUSE_SCROLL:
+        apply_mouse_scroll(dx, dy);
         break;
     case SSM_ACTION_NOOP:
     default:

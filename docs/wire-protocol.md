@@ -39,6 +39,7 @@ Action types (byte 2):
 | `0x05` | Mouse move (relative delta from bytes 12-15) |
 | `0x06` | Mouse button down (hold) |
 | `0x07` | Mouse button up (release) |
+| `0x08` | Mouse scroll (wheel step: the deltas in bytes 12-15 are read as scroll X and scroll Y instead of movement; positive Y scrolls up. `zmk_hid_mouse_scroll_set()`, send report, clear. Firmware older than this action ignores it as an unknown action) |
 
 ## Keyboard -> host (trigger channel)
 
